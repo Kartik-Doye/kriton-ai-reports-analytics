@@ -14,11 +14,13 @@ import FireSymbol from './components/FireSymbol';
 import { ThemeToggle } from './components/ThemeToggle';
 import { AmbientBackground } from './components/AmbientBackground';
 import { PipelineJob, DashboardSpec } from './types';
-import { CheckCircle2, Circle, Loader2, Mail, FileText } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, Mail, FileText, FileJson, Calendar as CalendarIcon } from 'lucide-react';
+import { getAccessToken } from './auth';
 import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
   const [jobId, setJobId] = useState<string | null>(null);
+  const [jobToken, setJobToken] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<PipelineJob['status']>('pending');
   const [logs, setLogs] = useState<string[]>([]);
   const [dashboardSpec, setDashboardSpec] = useState<DashboardSpec | null>(null);
@@ -28,9 +30,14 @@ export default function App() {
   const [emailErrorMsg, setEmailErrorMsg] = useState('');
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
 
-
   const [isExportingDocs, setIsExportingDocs] = useState(false);
-  const [docsErrorMsg, setDocsErrorMsg] = useState('');
+  const [docsUrl, setDocsUrl] = useState('');
+  
+  const [isScheduling, setIsScheduling] = useState(false);
+  const [calendarUrl, setCalendarUrl] = useState('');
+
+
+
 
   const resetSession = useCallback(() => {
     setJobId(null);
@@ -40,8 +47,6 @@ export default function App() {
     setCleanedData(null);
     setEmailStatus('idle');
     setIsEmailModalOpen(false);
-    setIsExportingDocs(false);
-    setDocsErrorMsg('');
   }, []);
 
   useEffect(() => {
@@ -66,16 +71,92 @@ export default function App() {
     };
   }, [resetSession]);
 
-  const handleUploadSuccess = (id: string) => {
+  const handleUploadSuccess = (id: string, token: string) => {
     setJobId(id);
+            setJobToken(token);
     setJobStatus('cleaning');
     setLogs([]);
+  };
+
+  
+  const handleDeleteData = async () => {
+    if (!confirm('Are you sure you want to delete all your data from the server? This cannot be undone.')) return;
+    try {
+      await fetch(`/api/job/${jobId}?token=${jobToken}`, { method: 'DELETE' });
+      setJobId(null);
+      setJobToken(null);
+      setJobStatus('pending');
+      setDashboardSpec(null);
+      setCleanedData(null);
+      setLogs([]);
+    } catch (e) {
+      console.error('Failed to delete data:', e);
+    }
   };
 
   const handleJobComplete = () => {
     setJobStatus('complete');
   };
 
+
+  
+  const handleExportDocs = async () => {
+    if (!jobId) return;
+    const confirmed = window.confirm('Export Executive Summary to a new Google Doc in your Drive?');
+    if (!confirmed) return;
+    
+    setIsExportingDocs(true);
+    setDocsUrl('');
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error('Not authenticated');
+      
+      const res = await fetch(`/api/job/${jobId}/export-docs`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'x-job-token': jobToken!
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setDocsUrl(data.url);
+    } catch (err: any) {
+      alert('Failed to export to Google Docs: ' + err.message);
+    } finally {
+      setIsExportingDocs(false);
+    }
+  };
+
+  const handleScheduleMeeting = async () => {
+    if (!jobId) return;
+    const confirmed = window.confirm('Schedule a follow-up meeting for tomorrow at 10 AM on your Google Calendar?');
+    if (!confirmed) return;
+    
+    setIsScheduling(true);
+    setCalendarUrl('');
+    try {
+      const token = await getAccessToken();
+      if (!token) throw new Error('Not authenticated');
+      
+      const res = await fetch(`/api/job/${jobId}/schedule-meeting`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'x-job-token': jobToken!,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ attendees: [] })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setCalendarUrl(data.url);
+    } catch (err: any) {
+      alert('Failed to schedule meeting: ' + err.message);
+    } finally {
+      setIsScheduling(false);
+    }
+  };
 
   const handleEmailReport = async (options: { to: string, cc: string, bcc: string, subject: string, body: string, attachHtml?: boolean }) => {
     if (!jobId) return;
@@ -85,7 +166,7 @@ export default function App() {
     try {
       const response = await fetch(`/api/job/${jobId}/email`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'x-job-token': jobToken! },
         body: JSON.stringify(options)
       });
       if (response.ok) {
@@ -113,7 +194,7 @@ export default function App() {
   useEffect(() => {
     if (!jobId || jobStatus === 'complete' || jobStatus === 'error') return;
     
-    const eventSource = new EventSource(`/api/job/${jobId}/stream`);
+    const eventSource = new EventSource(`/api/job/${jobId}/stream?token=${jobToken}`);
     
     eventSource.addEventListener('status', (e) => {
       const data = JSON.parse(e.data);
@@ -198,7 +279,8 @@ export default function App() {
                       className={`h-full overflow-y-auto ${jobStatus === 'emailing' ? 'opacity-50 pointer-events-none' : ''}`}
                     >
                       <DashboardView 
-                        jobId={jobId}
+                        jobId={jobId!}
+                        jobToken={jobToken!}
                         spec={dashboardSpec} 
                         data={cleanedData} 
                         autoExport={jobStatus === 'waiting_for_dashboard'}
@@ -225,21 +307,27 @@ export default function App() {
                       <p className="text-slate-600 dark:text-slate-300 mt-2 max-w-lg mx-auto">Your automated analytics package is ready. Securely download the artifacts below.</p>
                       
                       <div className="mt-8 flex flex-col sm:flex-row justify-center gap-4 flex-wrap">
-                        <a href={`/api/job/${jobId}/download/csv`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105">
+                        <a href={`/api/job/${jobId}/download/csv?token=${jobToken}`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105">
                           Download CSV
                         </a>
-                        <a href={`/api/job/${jobId}/download/png`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105">
-                          Download PNG
-                        </a>
-                        <a href={`/api/job/${jobId}/download/pdf`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105">
+                        
+                        <a href={`/api/job/${jobId}/download/pdf?token=${jobToken}`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105">
                           Download PDF
                         </a>
-                        <a href={`/api/job/${jobId}/download/html`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105">
+                        <a href={`/api/job/${jobId}/download/html?token=${jobToken}`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105">
                           Download HTML
                         </a>
-                        <a href={`/api/job/${jobId}/download/zip`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-transparent text-sm font-bold rounded-xl shadow-[0_0_15px_rgba(59,130,246,0.3)] text-white bg-blue-600 hover:bg-blue-500 focus:outline-none w-full sm:w-auto transition-all hover:scale-105">
+                        <a href={`/api/job/${jobId}/download/zip?token=${jobToken}`} download className="group relative overflow-hidden inline-flex items-center justify-center px-6 py-3 border border-transparent text-sm font-bold rounded-xl shadow-[0_0_15px_rgba(59,130,246,0.3)] text-white bg-blue-600 hover:bg-blue-500 focus:outline-none w-full sm:w-auto transition-all hover:scale-105">
                           Download All (ZIP)
                         </a>
+                        
+                        <button 
+                          onClick={handleDeleteData}
+                          className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-red-200/50 dark:border-red-500/20 text-sm font-semibold rounded-xl shadow-sm text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 focus:outline-none transition-all hover:scale-105"
+                        >
+                          Delete My Data
+                        </button>
+
                         <button 
                           onClick={() => { setIsEmailModalOpen(true); setEmailStatus('idle'); }}
                           className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105"
@@ -247,6 +335,35 @@ export default function App() {
                           <Mail className="w-4 h-4" />
                           Email Report
                         </button>
+
+                        <button 
+                          onClick={handleExportDocs}
+                          disabled={isExportingDocs}
+                          className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105 disabled:opacity-50"
+                        >
+                          {isExportingDocs ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileJson className="w-4 h-4" />}
+                          Export to Docs
+                        </button>
+                        {docsUrl && (
+                          <a href={docsUrl} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline text-sm font-medium self-center flex items-center gap-1">
+                            <CheckCircle2 className="w-4 h-4" /> Open Doc
+                          </a>
+                        )}
+                        
+                        <button 
+                          onClick={handleScheduleMeeting}
+                          disabled={isScheduling}
+                          className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105 disabled:opacity-50"
+                        >
+                          {isScheduling ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarIcon className="w-4 h-4" />}
+                          Schedule Review
+                        </button>
+                        {calendarUrl && (
+                          <a href={calendarUrl} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline text-sm font-medium self-center flex items-center gap-1">
+                            <CheckCircle2 className="w-4 h-4" /> View Event
+                          </a>
+                        )}
+
                       </div>
                     </motion.div>
                   )}
@@ -295,12 +412,7 @@ export default function App() {
       </main>
 
       {jobId && <LogViewer logs={logs} />}
-      <EmailModal 
-        isOpen={isEmailModalOpen} 
-        onClose={() => setIsEmailModalOpen(false)} 
-        onSend={handleEmailReport} 
-        status={isEmailing ? 'sending' : emailStatus} 
-      />
+      <EmailModal isOpen={isEmailModalOpen} onClose={() => setIsEmailModalOpen(false)} onSend={handleEmailReport} status={isEmailing ? 'sending' : emailStatus} jobId={jobId} jobToken={jobToken} />
 
       <footer className="h-10 bg-white/40 dark:bg-black/40 backdrop-blur-xl border-t border-white/20 dark:border-white/10 flex items-center justify-between px-6 flex-shrink-0 transition-colors z-20">
       </footer>

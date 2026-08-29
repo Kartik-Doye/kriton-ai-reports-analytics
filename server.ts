@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
+import { CLEANING_PROMPT, DASHBOARD_PROMPT, NARRATIVE_PROMPT, CHAT_PROMPT_TEMPLATE } from './src/config/prompts.js';
+import { logger } from './src/utils/logger.js';
 import path from 'path';
 import multer from 'multer';
 import crypto from 'crypto';
@@ -7,7 +9,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import nodemailer from 'nodemailer';
 import { createServer as createViteServer } from 'vite';
 import { PipelineJob, CleaningPlan, DashboardSpec } from './src/types.js';
-import { parseFile, applyCleaningPlan, computeStats, sampleData } from './src/utils/data-processing.js';
+import { parseFile, applyCleaningPlan, computeStats, sampleData, formatStat } from './src/utils/data-processing.js';
 import { generateReportPdf } from './src/utils/pdf-generator.js';
 import { generateInteractiveHtml } from './src/utils/html-generator.js';
 
@@ -47,6 +49,12 @@ const jobs = new Map<string, PipelineJob>();
 // SSE connections
 const clients = new Map<string, express.Response>();
 
+const emailRateLimit = new Map<string, number>();
+
+const uploadRateLimit = new Map<string, { count: number, resetAt: number }>();
+
+
+
 // File upload setup
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -79,8 +87,14 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     }
 
     const jobId = crypto.randomUUID();
+    const jobToken = crypto.randomUUID();
+    setTimeout(() => {
+      jobs.delete(jobId);
+      clients.delete(jobId);
+    }, 60 * 60 * 1000); // 1 hour memory cleanup
     jobs.set(jobId, {
       id: jobId,
+      jobToken,
       email,
       accessToken,
       fileName: req.file.originalname,
@@ -88,7 +102,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       status: 'pending'
     });
 
-    res.json({ jobId });
+    res.json({ jobId, jobToken });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Upload failed' });
@@ -99,12 +113,26 @@ app.get('/api/job/:jobId/stream', (req, res) => {
   const jobId = req.params.jobId;
   const job = jobs.get(jobId);
   if (!job) return res.status(404).send('Job not found');
+  
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
+  if (!reqToken || reqToken !== job.jobToken) {
+    return res.status(401).send('Unauthorized: Invalid job token');
+  }
+
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   
   clients.set(jobId, res);
+
+  // Replay current state for reconnecting clients
+  res.write(`data: ${JSON.stringify({ type: 'status', payload: { status: job.status } })}\n\n`);
+  if (job.dashboardSpec && job.cleanedData) {
+    // Note: Don't send the entire data on every reconnect unless we need to, but the client needs it to render
+    res.write(`data: ${JSON.stringify({ type: 'spec', payload: { spec: job.dashboardSpec, data: job.cleanedData } })}\n\n`);
+  }
+
 
   req.on('close', () => {
     clients.delete(jobId);
@@ -114,7 +142,7 @@ app.get('/api/job/:jobId/stream', (req, res) => {
   if (job.status === 'pending') {
     job.status = 'cleaning';
     runPipeline(job).catch(err => {
-      console.error(err);
+      logger.error(jobId, err);
       job.status = 'error';
       sendEvent(jobId, 'error', { message: err.message });
       clients.delete(jobId);
@@ -122,28 +150,18 @@ app.get('/api/job/:jobId/stream', (req, res) => {
   }
 });
 
-app.post('/api/job/:jobId/dashboard-image', async (req, res) => {
-  const jobId = req.params.jobId;
-  const job = jobs.get(jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
 
-  job.dashboardImage = req.body.image; // data URL
-  
-  // Check if we are ready to send email
-  if (job.status === 'waiting_for_dashboard' && job.reportText) {
-    job.reportPdf = await generateReportPdf(job.reportText, job.dashboardImage);
-    job.status = 'complete';
-    sendEvent(jobId, 'status', { status: job.status });
-    clients.delete(jobId);
-  }
-  
-  res.json({ success: true });
-});
 
 app.get('/api/job/:jobId/download/:fileType', async (req, res) => {
   const { jobId, fileType } = req.params;
   const job = jobs.get(jobId);
   if (!job) return res.status(404).send('Job not found');
+  
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
+  if (!reqToken || reqToken !== job.jobToken) {
+    return res.status(401).send('Unauthorized: Invalid job token');
+  }
+
 
   if (fileType === 'csv' && job.cleanedData) {
     const Papa = await import('papaparse');
@@ -229,11 +247,64 @@ User's Question: ${message}`;
   }
 });
 
+
+app.post('/api/job/:jobId/export-docs', async (req, res) => {
+  const { jobId } = req.params;
+  const token = req.headers.authorization?.split(' ')[1];
+  const job = jobs.get(jobId);
+  if (!job) return res.status(404).send('Job not found');
+  
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
+  if (!reqToken || reqToken !== job.jobToken) {
+    return res.status(401).send('Unauthorized: Invalid job token');
+  }
+
+  if (job.status !== 'complete') return res.status(400).send('Job not complete');
+  if (!token) return res.status(401).send('Unauthorized');
+  
+  try {
+    const docsUrl = await exportToGoogleDocs(job, token);
+    res.json({ success: true, url: docsUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/job/:jobId/schedule-meeting', async (req, res) => {
+  const { jobId } = req.params;
+  const { attendees } = req.body;
+  const token = req.headers.authorization?.split(' ')[1];
+  const job = jobs.get(jobId);
+  if (!job) return res.status(404).send('Job not found');
+  
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
+  if (!reqToken || reqToken !== job.jobToken) {
+    return res.status(401).send('Unauthorized: Invalid job token');
+  }
+
+  if (job.status !== 'complete') return res.status(400).send('Job not complete');
+  if (!token) return res.status(401).send('Unauthorized');
+  
+  try {
+    const eventUrl = await scheduleMeeting(job, token, attendees || []);
+    res.json({ success: true, url: eventUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 app.post('/api/job/:jobId/email', async (req, res) => {
   const { jobId } = req.params;
   const options = req.body;
   const job = jobs.get(jobId);
   if (!job) return res.status(404).send('Job not found');
+  
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
+  if (!reqToken || reqToken !== job.jobToken) {
+    return res.status(401).send('Unauthorized: Invalid job token');
+  }
+
   if (job.status !== 'complete') return res.status(400).send('Job not complete');
 
   try {
@@ -244,19 +315,26 @@ app.post('/api/job/:jobId/email', async (req, res) => {
   }
 });
 
-app.post('/api/job/:jobId/export-docs', async (req, res) => {
-  const { jobId } = req.params;
-  const job = jobs.get(jobId);
-  if (!job) return res.status(404).send('Job not found');
-  if (job.status !== 'complete') return res.status(400).send('Job not complete');
 
-  try {
-    const docsUrl = await exportToGoogleDocs(job);
-    res.json({ success: true, url: docsUrl });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+
+const aiCache = new Map<string, string>();
+async function generateCachedContent(prompt: string, config?: any): Promise<{text: string}> {
+  const hash = crypto.createHash('sha256').update(prompt).digest('hex');
+  if (aiCache.has(hash)) {
+    return { text: aiCache.get(hash) };
   }
-});
+  const resp = await withRetry(() => ai.models.generateContent({
+    model: 'gemini-3.6-flash',
+    contents: prompt,
+    config
+  }));
+  if (resp.text) {
+    if (resp.text.length < 100000) {
+      aiCache.set(hash, resp.text);
+    }
+  }
+  return { text: resp.text || '' };
+}
 
 async function runPipeline(job: PipelineJob) {
   sendEvent(job.id, 'status', { status: 'cleaning' });
@@ -267,32 +345,18 @@ async function runPipeline(job: PipelineJob) {
 
   sendEvent(job.id, 'log', { text: `Computing statistics (smart sampling for fast planning)...` });
   const sampledForStats = sampleData(rawData, 2000);
+  if (rawData.length > 0 && Object.keys(rawData[0]).length > 75) {
+    sendEvent(job.id, 'log', { text: '⚠️ Dataset exceeds 75 columns. Truncating to the first 75 columns to stay within AI context limits.' });
+  }
   const stats = computeStats(sampledForStats);
 
   sendEvent(job.id, 'log', { text: 'Asking Gemini for cleaning plan...' });
   
   // Stage 2 - Clean
   const sample = rawData.slice(0, 5);
-  const prompt1 = `You are a Senior Analytics Developer with over 20 years of experience in data engineering and quality assurance. You'll be given a list of columns with their inferred type, basic stats (null %, min, max, unique count, up to 8 example values), and a sample of up to 5 rows. You will not see the full dataset — your plan will be applied programmatically to every row, so decide rules, not individual values.
+  const prompt1 = `${CLEANING_PROMPT}\n\nSchema & Stats: ${JSON.stringify(stats)}\nSample rows: ${JSON.stringify(sample)}`;
 
-For each column, decide:
-- type: "string", "number", "date", "boolean", or "category"
-- format: for "date" columns only, the format to standardize to (e.g. "YYYY-MM-DD")
-- null_handling: "drop_row", "fill_median" (numbers only), "fill_mode" (categories only), "fill_value:<value>", or "leave"
-
-Also decide:
-- dedup_keys: the column(s) that together uniquely identify a row (empty array if none)
-- outliers: columns where extreme values look like data-entry errors, each with rule "flag_only" or "clip_to_3std"
-
-Rules: Use your extensive experience to make robust choices. Prefer "leave" over guessing when a column's purpose is unclear. Only use "drop_row" for essential columns like IDs or dates used in time-series analysis — never for optional descriptive fields. Respond with ONLY the JSON object — no explanation, no markdown fences.
-
-Schema & Stats: ${JSON.stringify(stats)}
-Sample rows: ${JSON.stringify(sample)}`;
-
-  const cleanResp = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3.6-flash',
-    contents: prompt1,
-    config: {
+  const cleanResp = await generateCachedContent(prompt1, {
       responseMimeType: 'application/json',
       responseSchema: {
         type: Type.OBJECT,
@@ -327,7 +391,7 @@ Sample rows: ${JSON.stringify(sample)}`;
         required: ['columns', 'dedup_keys', 'outliers']
       }
     }
-  }));
+  );
 
   let cleaningPlan: CleaningPlan;
   try {
@@ -353,34 +417,11 @@ Sample rows: ${JSON.stringify(sample)}`;
   const cleanedStats = computeStats(sampledForCleanedStats);
   job.stats = cleanedStats;
   const cleanedSample = cleanedData.slice(0, 5);
-  const prompt2 = `You are a Senior Analytics Developer with over 20 years of experience building enterprise dashboards. Your task is to design a highly comprehensive, multi-faceted, Power BI-style dashboard configuration based on deep statistical analysis of a complex dataset. You'll be given the cleaned dataset's schema, summary statistics, and a sample of rows.
-
-Return a JSON object with:
-- pages: an array of 3-5 pages (or categories) representing a professional BI report structure.
-Each page must have:
-  - id: unique string
-  - title: page title (e.g., "Executive Overview", "Deep Dive", "Geographic Analysis")
-  - kpis: 4-6 summary metrics worth surfacing
-  - charts: 4-8 chart definitions across multiple analytical perspectives. DO NOT repeat the same visualization type or x/y axis pairings constantly. Vary the chart types ('line', 'bar', 'pie') intelligently based on the data.
-  - insights: 3-5 deep, analytical observations — trends, comparisons, correlations, or anomalies worth calling out
-
-Rules: 
-1. Only reference columns that exist in the schema.
-2. Choose visualizations thoughtfully: Use "line" strictly for time-series or sequential data. Use "bar" for comparing categorical data or ranking. Use "pie" ONLY for composition of a whole, and only when there are 6 or fewer distinct categories.
-3. Ensure variety. A page should not just be 6 bar charts. Mix aggregations and dimensions logically.
-4. You were only shown a sample and stats — describe directional trends in insights, don't invent precise numbers you can't know. 
-5. The dashboard MUST be comprehensive and span multiple pages according to the data. Respond with ONLY the JSON object.
-6. Every chart must have a clear \`chartTitle\`, \`xAxisLabel\`, and \`yAxisLabel\` so a business stakeholder can understand it at a glance.
-
-Schema & Stats: ${JSON.stringify(cleanedStats)}
-Sample rows: ${JSON.stringify(cleanedSample)}`;
+  const prompt2 = `${DASHBOARD_PROMPT}\n\nSchema & Stats: ${JSON.stringify(cleanedStats)}\nSample rows: ${JSON.stringify(cleanedSample)}`;
 
   let dashboardSpec: DashboardSpec;
   try {
-    const planResp = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: prompt2,
-      config: {
+    const planResp = await generateCachedContent(prompt2, {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -435,7 +476,7 @@ Sample rows: ${JSON.stringify(cleanedSample)}`;
           required: ['pages']
         }
       }
-    }));
+    );
 
     dashboardSpec = JSON.parse(planResp.text.trim());
     
@@ -444,7 +485,7 @@ Sample rows: ${JSON.stringify(cleanedSample)}`;
     }
     sendEvent(job.id, 'log', { text: '✓ AI Dashboard Plan generated successfully' });
   } catch (err: any) {
-    console.error('AI Dashboard generation failed:', err);
+    logger.error(job.id, 'AI Dashboard generation failed:', err);
     sendEvent(job.id, 'log', { text: `[Fallback] AI Dashboard Plan failed (${err.message}). Using fallback.` });
     const cols = Object.keys(cleanedStats);
     dashboardSpec = {
@@ -458,6 +499,30 @@ Sample rows: ${JSON.stringify(cleanedSample)}`;
         insights: ['AI generation failed, this is a fallback overview.']
       }]
     };
+  }
+
+  
+  // Validate Dashboard Spec against actual cleaned data
+  const validColumns = new Set(Object.keys(cleanedStats));
+  dashboardSpec.pages.forEach(page => {
+    page.kpis = page.kpis.filter(kpi => {
+      if (!validColumns.has(kpi.field)) {
+        console.warn(`Invalid KPI field removed: ${kpi.field}`);
+        return false;
+      }
+      return true;
+    });
+    page.charts = page.charts.filter(chart => {
+      if (!validColumns.has(chart.x) || !validColumns.has(chart.y)) {
+        console.warn(`Invalid Chart fields removed: x=${chart.x}, y=${chart.y}`);
+        return false;
+      }
+      return true;
+    });
+  });
+  // Fallback if everything was removed
+  if (dashboardSpec.pages.every(p => p.kpis.length === 0 && p.charts.length === 0)) {
+    throw new Error('AI generated a dashboard referencing entirely invalid columns.');
   }
 
   job.dashboardSpec = dashboardSpec;
@@ -476,13 +541,13 @@ Sample rows: ${JSON.stringify(cleanedSample)}`;
     } else {
       const values = cleanedData.map(row => Number(row[kpi.field])).filter(val => !isNaN(val));
       if (kpi.agg === 'sum') {
-        result = values.reduce((sum, val) => sum + val, 0);
+        result = formatStat(values.reduce((sum, val) => sum + val, 0));
       } else if (kpi.agg === 'avg') {
-        result = values.length > 0 ? values.reduce((sum, val) => sum + val, 0) / values.length : 0;
+        result = formatStat(values.length > 0 ? values.reduce((sum, val) => sum + val, 0) / values.length : 0);
       } else if (kpi.agg === 'min') {
-        result = values.length > 0 ? Math.min(...values) : 0;
+        result = formatStat(values.length > 0 ? Math.min(...values) : 0);
       } else if (kpi.agg === 'max') {
-        result = values.length > 0 ? Math.max(...values) : 0;
+        result = formatStat(values.length > 0 ? Math.max(...values) : 0);
       }
     }
     return { ...kpi, exact_value: result };
@@ -501,16 +566,13 @@ KPIs with values: ${JSON.stringify(kpisWithValues, null, 2)}
 Insights: ${JSON.stringify(dashboardSpec.pages.flatMap(p => p.insights), null, 2)}`;
 
   try {
-    const reportResp = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: prompt3
-    }));
+    const reportResp = await generateCachedContent(prompt3);
     job.reportText = reportResp.text || '';
     sendEvent(job.id, 'log', { text: '✓ AI Executive Narrative generated successfully' });
   } catch (aiError: any) {
-    console.warn('AI report generation failed, using fallback:', aiError.message);
+    logger.warn(job.id, 'AI report generation failed, using fallback:', aiError.message);
     sendEvent(job.id, 'log', { text: `[Fallback] AI narrative generation failed (${aiError.message}). Using fallback.` });
-    job.reportText = `# Executive Summary\n\nAutomated narrative generation was unavailable due to an AI service error.\n\nHowever, your cleaned dataset and dashboard have been successfully generated and are available for download.\n\n## Key Metrics\n` + kpisWithValues.map(k => `- **${k.label}**: ${k.value}`).join('\n');
+    job.reportText = `# Executive Summary\n\nAutomated narrative generation was unavailable due to an AI service error.\n\nHowever, your cleaned dataset and dashboard have been successfully generated and are available for download.\n\n## Key Metrics\n` + kpisWithValues.map(k => `- **${k.label}**: ${k.exact_value}`).join('\n');
   }
   
   if (job.dashboardSpec && job.cleanedData) {
@@ -526,6 +588,13 @@ Insights: ${JSON.stringify(dashboardSpec.pages.flatMap(p => p.insights), null, 2
   } else {
     job.reportPdf = await generateReportPdf(job.reportText);
     sendEvent(job.id, 'log', { text: 'Waiting for dashboard export to finish...' });
+    setTimeout(() => {
+      if (job.status === 'waiting_for_dashboard') {
+        job.status = 'error';
+        sendEvent(job.id, 'error', { message: 'Dashboard screenshot timed out. Please keep the window open during processing.' });
+        clients.delete(job.id);
+      }
+    }, 45000);
   }
 }
 
@@ -584,18 +653,14 @@ async function sendEmail(job: PipelineJob, options: { to?: string, cc?: string, 
   const defaultSubject = `[${job.fileName.split('.')[0] || 'Dataset'}] — Analytics Report & Executive Summary`;
   
   const attachments = [
-    { filename: 'dashboard.png', content: dashBuffer },
     { filename: 'report.pdf', content: job.reportPdf! }
   ];
 
-  if (options.attachHtml && job.reportHtml) {
-    attachments.push({ filename: 'interactive_report.html', content: job.reportHtml });
-  }
 
   const mailOptions: any = {
     to: options.to || job.email,
     subject: options.subject || defaultSubject,
-    html: options.body || '<p>Hello,</p><p>Your automated analytics package is ready. Please find attached your Executive Summary (PDF) and Dashboard Export (PNG).</p>',
+    html: options.body || '<p>Hello,</p><p>Your automated analytics package is ready. Please find attached your Executive Summary (PDF).</p>',
     ...(options.cc ? { cc: options.cc } : {}),
     ...(options.bcc ? { bcc: options.bcc } : {}),
     attachments
@@ -619,17 +684,36 @@ async function sendEmail(job: PipelineJob, options: { to?: string, cc?: string, 
 
     sendEvent(job.id, 'log', { text: `Successfully sent email to ${job.email}` });
   } catch (emailError: any) {
-    console.error('Email sending failed:', emailError);
+    logger.error(job.id, 'Email sending failed:', emailError);
     sendEvent(job.id, 'log', { text: `Warning: Email delivery failed (${emailError.message}).` });
     throw emailError;
   }
 }
 
+
+app.delete('/api/job/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
+  if (!reqToken || reqToken !== job.jobToken) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid job token' });
+  }
+
+  // Clear memory
+  jobs.delete(jobId);
+  clients.delete(jobId);
+  
+  logger.info(jobId, 'User requested data deletion. Job wiped from memory.');
+  res.json({ success: true });
+});
+
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('Unhandled error:', err);
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'File too large. Maximum size is 15MB.' });
+      return res.status(413).json({ error: 'This file is too large. Please keep it under 15MB.' });
     }
     return res.status(400).json({ error: err.message });
   }
@@ -658,3 +742,92 @@ async function startServer() {
 }
 
 startServer();
+
+
+async function exportToGoogleDocs(job: PipelineJob, accessToken: string): Promise<string> {
+  const response = await fetch('https://docs.googleapis.com/v1/documents', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      title: `[${job.fileName.split('.')[0] || 'Dataset'}] — Analytics Report`
+    })
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to create document: ${errorText}`);
+  }
+  
+  const doc = await response.json();
+  const documentId = doc.documentId;
+  
+  // Insert text
+  let textToInsert = job.reportText || 'No report generated.';
+  // Append basic newlines
+  textToInsert = textToInsert + '\n\n(Dashboard metrics have been analyzed and filtered.)\n';
+  
+  const updateRes = await fetch(`https://docs.googleapis.com/v1/documents/${documentId}:batchUpdate`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      requests: [
+        {
+          insertText: {
+            location: { index: 1 },
+            text: textToInsert
+          }
+        }
+      ]
+    })
+  });
+
+  if (!updateRes.ok) {
+    console.error('Failed to update document text', await updateRes.text());
+  }
+
+  return `https://docs.google.com/document/d/${documentId}/edit`;
+}
+
+async function scheduleMeeting(job: PipelineJob, accessToken: string, attendees: string[]): Promise<string> {
+  const startTime = new Date();
+  startTime.setDate(startTime.getDate() + 1); // Tomorrow
+  startTime.setHours(10, 0, 0, 0); // 10:00 AM
+  
+  const endTime = new Date(startTime);
+  endTime.setHours(11, 0, 0, 0); // 11:00 AM
+  
+  const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      summary: `Data Review: ${job.fileName.split('.')[0] || 'Dataset'}`,
+      description: `Follow-up meeting to review the generated analytics report.\n\nKey findings:\n${job.reportText?.substring(0, 500)}...`,
+      start: {
+        dateTime: startTime.toISOString(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles'
+      },
+      end: {
+        dateTime: endTime.toISOString(),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles'
+      },
+      attendees: attendees.map(email => ({ email }))
+    })
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to create calendar event: ${errorText}`);
+  }
+  
+  const event = await response.json();
+  return event.htmlLink;
+}

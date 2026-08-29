@@ -44,6 +44,7 @@ export interface DashboardSpec {
 
 export interface PipelineJob {
   id: string;
+  jobToken: string;
   email: string;
   fileName: string;
   originalBuffer: Buffer;

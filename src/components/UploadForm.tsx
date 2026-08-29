@@ -4,11 +4,9 @@ import { useDropzone } from 'react-dropzone';
 import { motion, AnimatePresence } from 'motion/react';
 import { initAuth, googleSignIn, logout, getAccessToken } from '../auth';
 import { User } from 'firebase/auth';
-import { initAuth, googleSignIn, logout, getAccessToken } from '../auth';
-import { User } from 'firebase/auth';
 
 interface Props {
-  onSuccess: (jobId: string) => void;
+  onSuccess: (jobId: string, jobToken: string) => void;
 }
 
 export function UploadForm({ onSuccess }: Props) {
@@ -125,7 +123,7 @@ export function UploadForm({ onSuccess }: Props) {
       if (!res.ok) {
         throw new Error(data.error || 'Upload failed');
       }
-      onSuccess(data.jobId);
+      onSuccess(data.jobId, data.jobToken);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -235,6 +233,13 @@ export function UploadForm({ onSuccess }: Props) {
             <div className="absolute inset-0 bg-gradient-to-tr from-blue-500/0 via-blue-500/0 to-blue-500/0 group-hover:from-blue-500/5 group-hover:via-purple-500/5 group-hover:to-emerald-500/5 transition-all duration-500" />
           </div>
         </motion.div>
+
+        
+        <div className="text-center mt-2">
+          <a href="/sample_data.csv" download className="text-xs text-blue-600 hover:underline dark:text-blue-400">
+            Don't have a file? Download a sample CSV
+          </a>
+        </div>
 
         <AnimatePresence>
           {file && previewData.length > 0 && (

@@ -9,6 +9,7 @@ import Markdown from 'react-markdown';
 
 interface Props {
   jobId: string;
+  jobToken: string;
   spec: DashboardSpec;
   data: any[];
   autoExport: boolean;
@@ -16,7 +17,7 @@ interface Props {
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-export function DashboardView({ jobId, spec, data, autoExport }: Props) {
+export function DashboardView({ jobId, jobToken, spec, data, autoExport }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [exported, setExported] = useState(false);
   const [viewMode, setViewMode] = useState<'detailed' | 'summary'>(() => {
@@ -38,130 +39,81 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
   const [isChatLoading, setIsChatLoading] = useState(false);
   const chatMessagesEndRef = useRef<HTMLDivElement>(null);
 
+  
+
+
+  const [dataToUse, setDataToUse] = useState<any[]>(data);
+  const [crossFilter, setCrossFilter] = useState<{ field: string, value: string } | null>(null);
+  const [showRawData, setShowRawData] = useState(false);
+  
   useEffect(() => {
-    if (isChatOpen && chatMessagesEndRef.current) {
-      chatMessagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (crossFilter) {
+      setDataToUse(data.filter(r => String(r[crossFilter.field]) === crossFilter.value));
+    } else {
+      setDataToUse(data);
     }
-  }, [chatHistory, isChatOpen]);
+  }, [crossFilter, data]);
+  
+  const allColumns = data.length > 0 ? Object.keys(data[0]) : [];
+  const [selectedColumns, setSelectedColumns] = useState<Set<string>>(new Set(allColumns.slice(0, 10)));
+
+  const handleChartClick = (e: any, chartSpec: any) => {
+    if (!e || !e.activePayload || e.activePayload.length === 0) return;
+    const xVal = e.activePayload[0].payload.x;
+    
+    if (crossFilter && crossFilter.field === chartSpec.x && crossFilter.value === String(xVal)) {
+      setCrossFilter(null);
+    } else {
+      setCrossFilter({ field: chartSpec.x, value: String(xVal) });
+    }
+  };
+
+  const handleExportCsv = () => {
+    const csv = Papa.unparse(data.map(row => {
+      const exportRow: any = {};
+      Array.from(selectedColumns).forEach(c => exportRow[c] = row[c]);
+      return exportRow;
+    }));
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'kriton_export.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const handleSendMessage = async () => {
     if (!chatMessage.trim()) return;
-    const msg = chatMessage.trim();
+    const newMessage = { role: 'user' as const, content: chatMessage };
+    setChatHistory([...chatHistory, newMessage]);
     setChatMessage('');
-    setChatHistory(prev => [...prev, { role: 'user', content: msg }]);
     setIsChatLoading(true);
 
     try {
-      const response = await fetch(`/api/job/${jobId}/chat`, {
+      const res = await fetch(`/api/job/${jobId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg })
+        body: JSON.stringify({ message: chatMessage, jobToken })
       });
-      const data = await response.json();
-      setChatHistory(prev => [...prev, { role: 'assistant', content: data.reply || 'Sorry, I encountered an error.' }]);
-    } catch (err) {
-      setChatHistory(prev => [...prev, { role: 'assistant', content: 'Connection failed. Please try again later.' }]);
+      const resData = await res.json();
+      setChatHistory(prev => [...prev, { role: 'assistant', content: resData.reply }]);
+    } catch (e) {
+      setChatHistory(prev => [...prev, { role: 'assistant', content: 'Sorry, failed to get a response.' }]);
     } finally {
       setIsChatLoading(false);
     }
   };
 
-  
-  const [showRawData, setShowRawData] = useState(false);
-  const allColumns = useMemo(() => Object.keys(data[0] || {}), [data]);
-  const [selectedColumns, setSelectedColumns] = useState<Set<string>>(() => new Set(allColumns));
-  const [crossFilter, setCrossFilter] = useState<{ field: string, value: string } | null>(null);
-
-  const dataToUse = useMemo(() => {
-    if (!crossFilter) return data;
-    return data.filter(row => String(row[crossFilter.field]) === crossFilter.value);
-  }, [data, crossFilter]);
-
-  const handleChartClick = (chart: DashboardSpec['pages'][0]['charts'][0], event: any) => {
-    if (!event || (!event.activePayload && !event.payload)) return;
-    const xValue = event.activePayload ? event.activePayload[0].payload.x : event.payload.x;
-    if (xValue === undefined) return;
-    
-    // Toggle global cross-filter
-    if (crossFilter && crossFilter.field === chart.x && crossFilter.value === String(xValue)) {
-      setCrossFilter(null);
-    } else {
-      setCrossFilter({ field: chart.x, value: String(xValue) });
-    }
-    
-    // Also show drilldown
-    const dataPoints = data.filter(row => String(row[chart.x]) === String(xValue));
-    setDrilldown({ chartTitle: chart.title, filterValue: String(xValue), dataPoints });
-  };
-
-  const handleExportCsv = () => {
-    const filteredData = data.map(row => {
-      const newRow: any = {};
-      selectedColumns.forEach(col => {
-        if (row[col] !== undefined) newRow[col] = row[col];
-      });
-      return newRow;
-    });
-    const csv = Papa.unparse(filteredData);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', 'raw_data.csv');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  useEffect(() => {
-    localStorage.setItem('dashboard_view_mode', viewMode);
-  }, [viewMode]);
-
-  useEffect(() => {
-    localStorage.setItem('dashboard_theme', theme);
-  }, [theme]);
-
-  useEffect(() => {
-    if (autoExport && !exported && containerRef.current) {
-      // Small delay to ensure charts are fully rendered
-      const timer = setTimeout(async () => {
-        try {
-          if (!containerRef.current) return;
-          const el = containerRef.current;
-          
-          // Force explicit dimensions so html-to-image captures the entire scrollable area
-          const originalWidth = el.style.width;
-          const originalHeight = el.style.height;
-          const fullWidth = el.scrollWidth;
-          const fullHeight = el.scrollHeight;
-          
-          el.style.width = `${fullWidth}px`;
-          el.style.height = `${fullHeight}px`;
-
-          const imgData = await htmlToImage.toPng(el, {
-            pixelRatio: 2,
-            width: fullWidth,
-            height: fullHeight,
-          });
-          
-          el.style.width = originalWidth;
-          el.style.height = originalHeight;
-
-          await fetch(`/api/job/${jobId}/dashboard-image`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image: imgData })
-          });
-          setExported(true);
-        } catch (e) {
-          console.error('Failed to export dashboard', e);
-        }
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [autoExport, exported, jobId]);
-
   // Group data for charts
+  
+  const isValidChart = (chart: any, chartData: any[]) => {
+    if (!chartData || chartData.length === 0) return false;
+    // Check if at least one data point has a non-zero, valid y value
+    const hasValidY = chartData.some(d => d.y !== 0 && !isNaN(d.y));
+    return hasValidY;
+  };
+
   const processChartData = (chartSpec: DashboardSpec['pages'][0]['charts'][0]) => {
     const map = new Map<string, { x: string; y: number; count: number }>();
     
@@ -192,6 +144,7 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
       result.forEach(r => r.y = r.count);
     }
 
+    result.forEach(r => r.y = Math.round(r.y * 100) / 100);
     return result.slice(0, 50); // limit points
   };
 
@@ -225,7 +178,7 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
     
     let delta = 0;
     if (firstHalfValue !== 0) {
-      delta = ((secondHalfValue - firstHalfValue) / Math.abs(firstHalfValue)) * 100;
+      delta = Math.round((((secondHalfValue - firstHalfValue) / Math.abs(firstHalfValue)) * 100) * 100) / 100;
     }
     
     return {
@@ -255,13 +208,13 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
               <div className={`flex rounded-lg p-1 ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-100'}`}>
                 <button
                   onClick={() => setTheme('light')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${theme === 'light' ? 'bg-white shadow-sm text-slate-900' : (theme === 'dark' ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-700')}`}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${theme === 'light' ? 'bg-white shadow-sm text-slate-900' : ('text-slate-500 hover:text-slate-700')}`}
                 >
                   Light
                 </button>
                 <button
                   onClick={() => setTheme('dark')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : (theme === 'dark' ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-700')}`}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : ('text-slate-500 hover:text-slate-700')}`}
                 >
                   Dark
                 </button>
@@ -269,19 +222,19 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
               <div className={`flex rounded-lg p-1 ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-100'}`}>
                 <button
                   onClick={() => { setShowRawData(false); setViewMode('summary'); }}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${viewMode === 'summary' && !showRawData ? (theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : 'bg-white shadow-sm text-slate-900') : (theme === 'dark' ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-700')}`}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${viewMode === 'summary' && !showRawData ? (theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : 'bg-white shadow-sm text-slate-900') : ('text-slate-500 hover:text-slate-700')}`}
                 >
                   Summary
                 </button>
                 <button
                   onClick={() => { setShowRawData(false); setViewMode('detailed'); }}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${viewMode === 'detailed' && !showRawData ? (theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : 'bg-white shadow-sm text-slate-900') : (theme === 'dark' ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-700')}`}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${viewMode === 'detailed' && !showRawData ? (theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : 'bg-white shadow-sm text-slate-900') : ('text-slate-500 hover:text-slate-700')}`}
                 >
                   Detailed
                 </button>
                 <button
                   onClick={() => setShowRawData(true)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${showRawData ? (theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : 'bg-white shadow-sm text-slate-900') : (theme === 'dark' ? 'text-slate-400 hover:text-slate-300' : 'text-slate-500 hover:text-slate-700')}`}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${showRawData ? (theme === 'dark' ? 'bg-slate-700 shadow-sm text-white' : 'bg-white shadow-sm text-slate-900') : ('text-slate-500 hover:text-slate-700')}`}
                 >
                   Raw Data
                 </button>
@@ -384,10 +337,10 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
       ) : (
         <>
           {/* Pages Render */}
-          {(autoExport ? pages : [activePageData]).map(page => (
+          {(autoExport ? [pages[0]] : [activePageData]).map(page => (
             <div key={page.id} className="mb-12">
               {autoExport && (
-                <h2 className={`text-xl font-bold mb-4 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{page.title}</h2>
+                <h2 className={`text-xl font-bold mb-4 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>Snapshot: {page.title}</h2>
               )}
 
               {/* Highlights Widget */}
@@ -428,8 +381,9 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
 
           {(viewMode === 'detailed' || autoExport) && (
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-6">
-              {page.charts.map((chart, idx) => {
+              {page.charts.slice(0, autoExport ? 2 : undefined).map((chart, idx) => {
               const chartData = processChartData(chart);
+              if (!isValidChart(chart, chartData)) return null;
               const axisColor = theme === 'dark' ? '#94a3b8' : '#64748b';
               const tooltipStyle = {
                 backgroundColor: theme === 'dark' ? 'rgba(0, 0, 0, 0.8)' : 'rgba(255, 255, 255, 0.8)',
@@ -451,7 +405,7 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
                   <div className="absolute inset-0 bg-gradient-to-tr from-blue-500/0 via-purple-500/0 to-emerald-500/0 group-hover:from-blue-500/5 group-hover:via-purple-500/5 group-hover:to-emerald-500/5 transition-colors duration-500" />
                   <h3 className={`text-base font-bold mb-6 tracking-tight relative z-10 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{chart.chartTitle || chart.title}</h3>
                   <div className="flex-1 min-h-0 relative z-10">
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="99%" height="100%">
                       {chart.type === 'line' ? (
                       <LineChart data={chartData} onClick={(e) => handleChartClick(chart, e)} margin={{ top: 5, right: 30, left: 20, bottom: 25 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#e2e8f0'} />
@@ -461,7 +415,7 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
                         <Legend wrapperStyle={{ fontSize: '12px', color: axisColor, paddingTop: '20px' }} />
                         <Line type="monotone" dataKey="y" stroke={COLORS[idx % COLORS.length]} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} name={chart.y} />
                       </LineChart>
-                    ) : chart.type === 'bar' ? (
+                    ) : (chart.type === 'bar' || (chart.type !== 'line' && chart.type !== 'pie')) ? (
                       <BarChart data={chartData} onClick={(e) => handleChartClick(chart, e)} margin={{ top: 5, right: 30, left: 20, bottom: 25 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#e2e8f0'} />
                         <XAxis dataKey="x" tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.xAxisLabel || chart.x, position: 'insideBottom', offset: -15, fill: axisColor, fontSize: 12 }} />
@@ -508,6 +462,11 @@ export function DashboardView({ jobId, spec, data, autoExport }: Props) {
           )}
         </div>
       ))}
+      {autoExport && (
+        <div className={`text-center p-6 mt-8 rounded-xl font-semibold border ${theme === 'dark' ? 'bg-slate-800/50 text-slate-300 border-slate-700' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
+          Full interactive dashboard with more charts, cross-filtering, and pages available in the online report.
+        </div>
+      )}
       </>
       )}
       

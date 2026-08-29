@@ -39,11 +39,19 @@ export function sampleData(data: any[], maxRows: number = 500): any[] {
   return sampled;
 }
 
+export function formatStat(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 export function computeStats(data: any[]) {
   const stats: Record<string, any> = {};
   if (data.length === 0) return stats;
   
-  const headers = Object.keys(data[0]);
+  let headers = Object.keys(data[0]);
+  if (headers.length > 75) {
+    console.warn('Dataset has too many columns. Truncating to 75 to protect AI token budget.');
+    headers = headers.slice(0, 75);
+  }
   headers.forEach(h => {
     stats[h] = { type: 'unknown', nullCount: 0, uniqueCount: 0, min: null, max: null };
   });
@@ -56,13 +64,13 @@ export function computeStats(data: any[]) {
       } else {
         if (typeof val === 'number') {
           stats[h].type = 'number';
-          if (stats[h].min === null || val < stats[h].min) stats[h].min = val;
-          if (stats[h].max === null || val > stats[h].max) stats[h].max = val;
+          if (stats[h].min === null || val < stats[h].min) stats[h].min = formatStat(val);
+          if (stats[h].max === null || val > stats[h].max) stats[h].max = formatStat(val);
         } else if (typeof val === 'string' && !isNaN(Number(val))) {
           stats[h].type = 'number';
           const n = Number(val);
-          if (stats[h].min === null || n < stats[h].min) stats[h].min = n;
-          if (stats[h].max === null || n > stats[h].max) stats[h].max = n;
+          if (stats[h].min === null || n < stats[h].min) stats[h].min = formatStat(n);
+          if (stats[h].max === null || n > stats[h].max) stats[h].max = formatStat(n);
         } else {
           stats[h].type = 'string';
         }
