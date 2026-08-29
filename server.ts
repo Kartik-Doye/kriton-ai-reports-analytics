@@ -581,7 +581,7 @@ Insights: ${JSON.stringify(dashboardSpec.pages.flatMap(p => p.insights), null, 2
   }
 
   if (job.dashboardImage) {
-    job.reportPdf = await generateReportPdf(job.reportText, job.dashboardImage);
+    job.reportPdf = await generateReportPdf(job.reportText!, typeof job.dashboardSpec === 'string' ? JSON.parse(job.dashboardSpec) : job.dashboardSpec, job.cleanedData);
     job.status = 'complete';
     sendEvent(job.id, 'status', { status: job.status });
     clients.delete(job.id);

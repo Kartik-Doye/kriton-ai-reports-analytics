@@ -415,7 +415,7 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport }: Props
                         <Legend wrapperStyle={{ fontSize: '12px', color: axisColor, paddingTop: '20px' }} />
                         <Line type="monotone" dataKey="y" stroke={COLORS[idx % COLORS.length]} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} name={chart.y} />
                       </LineChart>
-                    ) : (chart.type === 'bar' || (chart.type !== 'line' && chart.type !== 'pie')) ? (
+                    ) : chart.type === 'bar' ? (
                       <BarChart data={chartData} onClick={(e) => handleChartClick(chart, e)} margin={{ top: 5, right: 30, left: 20, bottom: 25 }}>
                         <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#e2e8f0'} />
                         <XAxis dataKey="x" tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.xAxisLabel || chart.x, position: 'insideBottom', offset: -15, fill: axisColor, fontSize: 12 }} />
