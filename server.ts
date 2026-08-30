@@ -22,7 +22,7 @@ const PORT = 3000;
 app.use(express.json({ limit: '50mb' })); // for receiving the base64 dashboard image
 
 // Retry helper for API calls
-async function withRetry<T>(fn: () => Promise<T>, retries = 5, initialDelay = 2000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries = 15, initialDelay = 2000): Promise<T> {
   let attempt = 0;
   while (attempt < retries) {
     try {
@@ -33,11 +33,11 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 5, initialDelay = 20
       const isRetryable = msg.includes('503') || msg.includes('429') || msg.includes('500') || msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || error.status === 503 || error.status === 429;
       
       if (attempt >= retries || !isRetryable) {
+        console.error('API call failed permanently after', attempt, 'attempts:', error);
         throw error;
       }
-      const delay = initialDelay * Math.pow(2, attempt - 1);
-      console.warn(`API call failed, retrying in ${delay}ms... (Attempt ${attempt}/${retries})`);
-      console.error(error);
+      const delay = Math.min(initialDelay * Math.pow(1.5, attempt - 1), 15000);
+      console.warn(`API call failed (${msg.substring(0, 50)}...), retrying in ${Math.round(delay)}ms... (Attempt ${attempt}/${retries})`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -127,10 +127,10 @@ app.get('/api/job/:jobId/stream', (req, res) => {
   clients.set(jobId, res);
 
   // Replay current state for reconnecting clients
-  res.write(`data: ${JSON.stringify({ type: 'status', payload: { status: job.status } })}\n\n`);
+  res.write(`event: status\ndata: ${JSON.stringify({ status: job.status })}\n\n`);
   if (job.dashboardSpec && job.cleanedData) {
     // Note: Don't send the entire data on every reconnect unless we need to, but the client needs it to render
-    res.write(`data: ${JSON.stringify({ type: 'spec', payload: { spec: job.dashboardSpec, data: job.cleanedData } })}\n\n`);
+    res.write(`event: spec\ndata: ${JSON.stringify({ spec: job.dashboardSpec, data: job.cleanedData })}\n\n`);
   }
 
 
@@ -236,10 +236,10 @@ Please answer the user's question about their data based strictly on this contex
 
 User's Question: ${message}`;
     
-    const response = await ai.models.generateContent({
+    const response = await withRetry(() => ai.models.generateContent({
       model: 'gemini-3.6-flash',
       contents: prompt
-    });
+    }));
     
     res.json({ reply: response.text });
   } catch (err: any) {
@@ -356,45 +356,45 @@ async function runPipeline(job: PipelineJob) {
   const sample = rawData.slice(0, 5);
   const prompt1 = `${CLEANING_PROMPT}\n\nSchema & Stats: ${JSON.stringify(stats)}\nSample rows: ${JSON.stringify(sample)}`;
 
-  const cleanResp = await generateCachedContent(prompt1, {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          columns: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                name: { type: Type.STRING },
-                type: { type: Type.STRING },
-                format: { type: Type.STRING },
-                null_handling: { type: Type.STRING }
-              },
-              required: ['name', 'type', 'null_handling']
-            }
-          },
-          dedup_keys: { type: Type.ARRAY, items: { type: Type.STRING } },
-          outliers: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                column: { type: Type.STRING },
-                rule: { type: Type.STRING },
-                threshold: { type: Type.STRING }
-              },
-              required: ['column', 'rule', 'threshold']
-            }
-          }
-        },
-        required: ['columns', 'dedup_keys', 'outliers']
-      }
-    }
-  );
-
+  let cleanResp;
   let cleaningPlan: CleaningPlan;
   try {
+    cleanResp = await generateCachedContent(prompt1, {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            columns: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  type: { type: Type.STRING },
+                  format: { type: Type.STRING },
+                  null_handling: { type: Type.STRING }
+                },
+                required: ['name', 'type', 'null_handling']
+              }
+            },
+            dedup_keys: { type: Type.ARRAY, items: { type: Type.STRING } },
+            outliers: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  column: { type: Type.STRING },
+                  rule: { type: Type.STRING },
+                  threshold: { type: Type.STRING }
+                },
+                required: ['column', 'rule', 'threshold']
+              }
+            }
+          },
+          required: ['columns', 'dedup_keys', 'outliers']
+        }
+      }
+    );
     cleaningPlan = JSON.parse(cleanResp.text.trim());
     sendEvent(job.id, 'log', { text: '✓ AI Cleaning Plan generated successfully' });
   } catch (err: any) {
@@ -580,22 +580,16 @@ Insights: ${JSON.stringify(dashboardSpec.pages.flatMap(p => p.insights), null, 2
     sendEvent(job.id, 'log', { text: '✓ Interactive HTML export generated successfully' });
   }
 
-  if (job.dashboardImage) {
-    job.reportPdf = await generateReportPdf(job.reportText!, typeof job.dashboardSpec === 'string' ? JSON.parse(job.dashboardSpec) : job.dashboardSpec, job.cleanedData);
-    job.status = 'complete';
-    sendEvent(job.id, 'status', { status: job.status });
-    clients.delete(job.id);
-  } else {
-    job.reportPdf = await generateReportPdf(job.reportText);
-    sendEvent(job.id, 'log', { text: 'Waiting for dashboard export to finish...' });
-    setTimeout(() => {
-      if (job.status === 'waiting_for_dashboard') {
-        job.status = 'error';
-        sendEvent(job.id, 'error', { message: 'Dashboard screenshot timed out. Please keep the window open during processing.' });
-        clients.delete(job.id);
-      }
-    }, 45000);
-  }
+  // Generate PDF natively (chartjs-node-canvas handles the charts)
+  job.reportPdf = await generateReportPdf(
+    job.reportText!, 
+    typeof job.dashboardSpec === 'string' ? JSON.parse(job.dashboardSpec) : job.dashboardSpec, 
+    job.cleanedData
+  );
+  
+  job.status = 'complete';
+  sendEvent(job.id, 'status', { status: job.status });
+  clients.delete(job.id);
 }
 
 function generateDataProfileHtml(stats: any): Buffer {

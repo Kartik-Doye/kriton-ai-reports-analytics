@@ -3,6 +3,7 @@ import { UploadCloud, CheckCircle2 } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { motion, AnimatePresence } from 'motion/react';
 import { initAuth, googleSignIn, logout, getAccessToken } from '../auth';
+import { fetchWithRetry } from '../utils/retry';
 import { User } from 'firebase/auth';
 
 interface Props {
@@ -115,7 +116,7 @@ export function UploadForm({ onSuccess }: Props) {
     formData.append('file', file);
 
     try {
-      const res = await fetch('/api/upload', {
+      const res = await fetchWithRetry('/api/upload', {
         method: 'POST',
         body: formData,
       });

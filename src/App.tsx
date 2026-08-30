@@ -17,6 +17,7 @@ import { PipelineJob, DashboardSpec } from './types';
 import { CheckCircle2, Circle, Loader2, Mail, FileText, FileJson, Calendar as CalendarIcon } from 'lucide-react';
 import { getAccessToken } from './auth';
 import { motion, AnimatePresence } from 'motion/react';
+import { fetchWithRetry } from './utils/retry';
 
 export default function App() {
   const [jobId, setJobId] = useState<string | null>(null);
@@ -82,7 +83,7 @@ export default function App() {
   const handleDeleteData = async () => {
     if (!confirm('Are you sure you want to delete all your data from the server? This cannot be undone.')) return;
     try {
-      await fetch(`/api/job/${jobId}?token=${jobToken}`, { method: 'DELETE' });
+      await fetchWithRetry(`/api/job/${jobId}?token=${jobToken}`, { method: 'DELETE' });
       setJobId(null);
       setJobToken(null);
       setJobStatus('pending');
@@ -111,7 +112,7 @@ export default function App() {
       const token = await getAccessToken();
       if (!token) throw new Error('Not authenticated');
       
-      const res = await fetch(`/api/job/${jobId}/export-docs`, {
+      const res = await fetchWithRetry(`/api/job/${jobId}/export-docs`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -139,7 +140,7 @@ export default function App() {
       const token = await getAccessToken();
       if (!token) throw new Error('Not authenticated');
       
-      const res = await fetch(`/api/job/${jobId}/schedule-meeting`, {
+      const res = await fetchWithRetry(`/api/job/${jobId}/schedule-meeting`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -164,7 +165,7 @@ export default function App() {
     setEmailStatus('idle');
     setEmailErrorMsg('');
     try {
-      const response = await fetch(`/api/job/${jobId}/email`, {
+      const response = await fetchWithRetry(`/api/job/${jobId}/email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-job-token': jobToken! },
         body: JSON.stringify(options)
@@ -194,35 +195,56 @@ export default function App() {
   useEffect(() => {
     if (!jobId || jobStatus === 'complete' || jobStatus === 'error') return;
     
-    const eventSource = new EventSource(`/api/job/${jobId}/stream?token=${jobToken}`);
+    let eventSource: EventSource | null = null;
+    let retryAttempt = 0;
+    const maxRetries = 5;
+    const initialDelay = 2000;
+    let retryTimeout: NodeJS.Timeout;
     
-    eventSource.addEventListener('status', (e) => {
-      const data = JSON.parse(e.data);
-      setJobStatus(data.status);
-      if (data.status === 'complete') {
-        handleJobComplete();
-        eventSource.close();
-      }
-    });
+    const connect = () => {
+      eventSource = new EventSource(`/api/job/${jobId}/stream?token=${jobToken}`);
+      
+      eventSource.addEventListener('status', (e) => {
+        retryAttempt = 0;
+        const data = JSON.parse(e.data);
+        setJobStatus(data.status);
+        if (data.status === 'complete') {
+          handleJobComplete();
+          eventSource?.close();
+        }
+      });
 
-    eventSource.addEventListener('log', (e) => {
-      const data = JSON.parse(e.data);
-      setLogs((prev) => [...prev, data.text]);
-    });
+      eventSource.addEventListener('log', (e) => {
+        retryAttempt = 0;
+        const data = JSON.parse(e.data);
+        setLogs((prev) => [...prev, data.text]);
+      });
 
-    eventSource.addEventListener('spec', (e) => {
-      const data = JSON.parse(e.data);
-      setDashboardSpec(data.spec);
-      setCleanedData(data.data);
-    });
+      eventSource.addEventListener('spec', (e) => {
+        retryAttempt = 0;
+        const data = JSON.parse(e.data);
+        setDashboardSpec(data.spec);
+        setCleanedData(data.data);
+      });
 
-    eventSource.addEventListener('error', (e) => {
-      setJobStatus('error');
-      eventSource.close();
-    });
+      eventSource.addEventListener('error', (e) => {
+        eventSource?.close();
+        retryAttempt++;
+        if (retryAttempt > maxRetries) {
+          setJobStatus('error');
+        } else {
+          const delay = initialDelay * Math.pow(2, retryAttempt - 1);
+          console.warn(`SSE connection failed, retrying in ${delay}ms... (Attempt ${retryAttempt}/${maxRetries})`);
+          retryTimeout = setTimeout(connect, delay);
+        }
+      });
+    };
+
+    connect();
 
     return () => {
-      eventSource.close();
+      clearTimeout(retryTimeout);
+      eventSource?.close();
     };
   }, [jobId]);
 
@@ -395,12 +417,22 @@ export default function App() {
                           </button>
                         </div>
                       ) : (
-                        <button 
-                          onClick={resetSession}
-                          className="mt-6 px-6 py-3 bg-red-600 text-white font-bold rounded-xl shadow-lg hover:bg-red-500 transition-all hover:scale-105"
-                        >
-                          Try Again
-                        </button>
+                        <div className="mt-6 flex flex-col sm:flex-row gap-4 justify-center">
+                          <button 
+                            onClick={resetSession}
+                            className="px-6 py-3 bg-red-600 text-white font-bold rounded-xl shadow-lg hover:bg-red-500 transition-all hover:scale-105"
+                          >
+                            Try Again
+                          </button>
+                          {dashboardSpec && (
+                            <button 
+                              onClick={() => setJobStatus('complete')}
+                              className="px-6 py-3 bg-slate-600 dark:bg-slate-700 text-white font-bold rounded-xl shadow-lg hover:bg-slate-500 transition-all hover:scale-105"
+                            >
+                              Preview Dashboard Anyway
+                            </button>
+                          )}
+                        </div>
                       )}
                     </motion.div>
                   )}

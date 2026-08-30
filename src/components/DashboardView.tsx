@@ -6,6 +6,7 @@ import Papa from 'papaparse';
 import { motion, AnimatePresence } from 'motion/react';
 import { MessageCircle, X, Send, Bot, User } from 'lucide-react';
 import Markdown from 'react-markdown';
+import { fetchWithRetry } from '../utils/retry';
 
 interface Props {
   jobId: string;
@@ -91,7 +92,7 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport }: Props
     setIsChatLoading(true);
 
     try {
-      const res = await fetch(`/api/job/${jobId}/chat`, {
+      const res = await fetchWithRetry(`/api/job/${jobId}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: chatMessage, jobToken })
