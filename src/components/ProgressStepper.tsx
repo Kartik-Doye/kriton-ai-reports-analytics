@@ -10,8 +10,7 @@ interface Props {
 const steps = [
   { id: 'cleaning', label: '2. Clean' },
   { id: 'planning', label: '3. Plan Dashboard' },
-  { id: 'waiting_for_dashboard', label: '4. Analyze & Build' },
-  { id: 'emailing', label: '5. Deliver' }
+  { id: 'waiting_for_dashboard', label: '4. Analyze & Build' }
 ];
 
 export function ProgressStepper({ status }: Props) {

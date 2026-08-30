@@ -30,7 +30,8 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 15, initialDelay = 2
     } catch (error: any) {
       attempt++;
       const msg = String(error.message || error);
-      const isRetryable = msg.includes('503') || msg.includes('429') || msg.includes('500') || msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || error.status === 503 || error.status === 429;
+      const isQuotaExceeded = msg.includes('exceeded your current quota') || msg.includes('Quota exceeded');
+      const isRetryable = !isQuotaExceeded && (msg.includes('503') || msg.includes('429') || msg.includes('500') || msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || error.status === 503 || error.status === 429);
       
       if (attempt >= retries || !isRetryable) {
         console.error('API call failed permanently after', attempt, 'attempts:', error);
@@ -237,7 +238,7 @@ Please answer the user's question about their data based strictly on this contex
 User's Question: ${message}`;
     
     const response = await withRetry(() => ai.models.generateContent({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.5-flash',
       contents: prompt
     }));
     
@@ -324,7 +325,7 @@ async function generateCachedContent(prompt: string, config?: any): Promise<{tex
     return { text: aiCache.get(hash) };
   }
   const resp = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3.6-flash',
+    model: 'gemini-3.5-flash',
     contents: prompt,
     config
   }));

@@ -351,14 +351,6 @@ export default function App() {
                         </button>
 
                         <button 
-                          onClick={() => { setIsEmailModalOpen(true); setEmailStatus('idle'); }}
-                          className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105"
-                        >
-                          <Mail className="w-4 h-4" />
-                          Email Report
-                        </button>
-
-                        <button 
                           onClick={handleExportDocs}
                           disabled={isExportingDocs}
                           className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105 disabled:opacity-50"
