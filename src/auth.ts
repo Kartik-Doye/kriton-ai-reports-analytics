@@ -9,9 +9,6 @@ const provider = new GoogleAuthProvider();
 provider.addScope('https://mail.google.com/');
 provider.addScope('https://www.googleapis.com/auth/gmail.send');
 provider.addScope('https://www.googleapis.com/auth/gmail.compose');
-provider.addScope('https://www.googleapis.com/auth/calendar.events');
-provider.addScope('https://www.googleapis.com/auth/documents');
-provider.addScope('https://www.googleapis.com/auth/drive.file');
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;

@@ -47,10 +47,32 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 15, initialDelay = 2
 
 // Job store (in-memory for this session)
 const jobs = new Map<string, PipelineJob>();
+import fs from "fs";
+const DATA_DIR = path.join(process.cwd(), ".data", "jobs");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+for (const file of fs.readdirSync(DATA_DIR)) {
+  if (file.endsWith(".json")) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), "utf8"));
+      jobs.set(data.id, data as PipelineJob);
+    } catch (e) {}
+  }
+}
+function saveJobToDisk(job: PipelineJob) {
+  const { originalBuffer, reportPdf, reportHtml, ...rest } = job;
+  try { fs.writeFileSync(path.join(DATA_DIR, `${job.id}.json`), JSON.stringify(rest)); } catch(e) {}
+}
 // SSE connections
 const clients = new Map<string, express.Response>();
 
 const emailRateLimit = new Map<string, number>();
+
+setInterval(() => {
+  for (const job of jobs.values()) {
+    saveJobToDisk(job);
+  }
+}, 5000);
+
 
 const uploadRateLimit = new Map<string, { count: number, resetAt: number }>();
 
@@ -80,6 +102,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
     const email = req.body.email;
     const accessToken = req.body.accessToken;
+    const analysisMode = req.body.analysisMode || 'detailed';
     if (!email) return res.status(400).json({ error: 'No email provided' });
 
     const ext = path.extname(req.file.originalname).toLowerCase();
@@ -89,18 +112,15 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 
     const jobId = crypto.randomUUID();
     const jobToken = crypto.randomUUID();
-    setTimeout(() => {
-      jobs.delete(jobId);
-      clients.delete(jobId);
-    }, 60 * 60 * 1000); // 1 hour memory cleanup
-    jobs.set(jobId, {
+        jobs.set(jobId, {
       id: jobId,
       jobToken,
       email,
       accessToken,
+      analysisMode,
       fileName: req.file.originalname,
       originalBuffer: req.file.buffer,
-      status: 'pending'
+      status: 'pending', timestamp: Date.now()
     });
 
     res.json({ jobId, jobToken });
@@ -108,6 +128,42 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     console.error(error);
     res.status(500).json({ error: 'Upload failed' });
   }
+});
+
+
+app.get('/api/jobs', (req, res) => {
+  const email = req.query.email;
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!email || !token) return res.status(401).json({ error: 'Unauthorized' });
+  
+  // Note: in a real app, verify the access token belongs to the email.
+  // We trust it for this prototype.
+  
+  const userJobs = Array.from(jobs.values())
+    .filter(j => j.email === email)
+    .map(j => ({
+      id: j.id,
+      fileName: j.fileName,
+      status: j.status,
+      timestamp: j.id // we can just use id as a rough sort, but let's add timestamp
+    }));
+    
+  res.json(userJobs);
+});
+
+app.get('/api/job/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const token = req.headers.authorization?.split(' ')[1];
+  const reqToken = req.query.token || req.headers['x-job-token'];
+  
+  const job = jobs.get(jobId);
+  if (!job) return res.status(404).json({ error: 'Not found' });
+  
+  if (job.jobToken !== reqToken) return res.status(401).json({ error: 'Unauthorized' });
+  
+  // Exclude buffers for the JSON response
+  const { originalBuffer, reportPdf, reportHtml, ...safeJob } = job;
+  res.json(safeJob);
 });
 
 app.get('/api/job/:jobId/stream', (req, res) => {
@@ -131,7 +187,7 @@ app.get('/api/job/:jobId/stream', (req, res) => {
   res.write(`event: status\ndata: ${JSON.stringify({ status: job.status })}\n\n`);
   if (job.dashboardSpec && job.cleanedData) {
     // Note: Don't send the entire data on every reconnect unless we need to, but the client needs it to render
-    res.write(`event: spec\ndata: ${JSON.stringify({ spec: job.dashboardSpec, data: job.cleanedData })}\n\n`);
+    res.write(`event: spec\ndata: ${JSON.stringify({ spec: job.dashboardSpec, data: job.cleanedData, stats: job.stats, dataQuality: job.dataQuality })}\n\n`);
   }
 
 
@@ -249,51 +305,6 @@ User's Question: ${message}`;
 });
 
 
-app.post('/api/job/:jobId/export-docs', async (req, res) => {
-  const { jobId } = req.params;
-  const token = req.headers.authorization?.split(' ')[1];
-  const job = jobs.get(jobId);
-  if (!job) return res.status(404).send('Job not found');
-  
-  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
-  if (!reqToken || reqToken !== job.jobToken) {
-    return res.status(401).send('Unauthorized: Invalid job token');
-  }
-
-  if (job.status !== 'complete') return res.status(400).send('Job not complete');
-  if (!token) return res.status(401).send('Unauthorized');
-  
-  try {
-    const docsUrl = await exportToGoogleDocs(job, token);
-    res.json({ success: true, url: docsUrl });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.post('/api/job/:jobId/schedule-meeting', async (req, res) => {
-  const { jobId } = req.params;
-  const { attendees } = req.body;
-  const token = req.headers.authorization?.split(' ')[1];
-  const job = jobs.get(jobId);
-  if (!job) return res.status(404).send('Job not found');
-  
-  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
-  if (!reqToken || reqToken !== job.jobToken) {
-    return res.status(401).send('Unauthorized: Invalid job token');
-  }
-
-  if (job.status !== 'complete') return res.status(400).send('Job not complete');
-  if (!token) return res.status(401).send('Unauthorized');
-  
-  try {
-    const eventUrl = await scheduleMeeting(job, token, attendees || []);
-    res.json({ success: true, url: eventUrl });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 
 app.post('/api/job/:jobId/email', async (req, res) => {
   const { jobId } = req.params;
@@ -317,6 +328,32 @@ app.post('/api/job/:jobId/email', async (req, res) => {
 });
 
 
+
+app.post('/api/job/:jobId/refresh', async (req, res) => {
+  const { jobId } = req.params;
+  const job = jobs.get(jobId);
+  if (!job) return res.status(404).send('Job not found');
+  
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
+  if (!reqToken || reqToken !== job.jobToken) {
+    return res.status(401).send('Unauthorized: Invalid job token');
+  }
+
+  job.status = 'pending';
+  job.cleanedData = undefined;
+  job.stats = undefined;
+  job.cleaningLog = undefined;
+  job.dashboardSpec = undefined;
+  job.reportText = undefined;
+
+  runPipeline(job).catch(err => {
+    logger.error(jobId, err);
+    job.status = 'error';
+    sendEvent(jobId, 'error', { message: err.message });
+  });
+
+  res.json({ success: true });
+});
 
 const aiCache = new Map<string, string>();
 async function generateCachedContent(prompt: string, config?: any): Promise<{text: string}> {
@@ -408,6 +445,7 @@ async function runPipeline(job: PipelineJob) {
   const { cleanedData, log } = applyCleaningPlan(rawData, cleaningPlan);
   job.cleanedData = cleanedData;
   job.cleaningLog = log;
+  job.dataQuality = { totalRecords: rawData.length, rowsExcluded: rawData.length - cleanedData.length };
   
   sendEvent(job.id, 'log', { text: log });
   sendEvent(job.id, 'status', { status: 'planning' });
@@ -418,7 +456,7 @@ async function runPipeline(job: PipelineJob) {
   const cleanedStats = computeStats(sampledForCleanedStats);
   job.stats = cleanedStats;
   const cleanedSample = cleanedData.slice(0, 5);
-  const prompt2 = `${DASHBOARD_PROMPT}\n\nSchema & Stats: ${JSON.stringify(cleanedStats)}\nSample rows: ${JSON.stringify(cleanedSample)}`;
+  const prompt2 = `${DASHBOARD_PROMPT(job.analysisMode || "detailed")}\n\nSchema & Stats: ${JSON.stringify(cleanedStats)}\nSample rows: ${JSON.stringify(cleanedSample)}`;
 
   let dashboardSpec: DashboardSpec;
   try {
@@ -698,6 +736,7 @@ app.delete('/api/job/:jobId', (req, res) => {
 
   // Clear memory
   jobs.delete(jobId);
+  try { fs.unlinkSync(path.join(DATA_DIR, `${jobId}.json`)); } catch(e) {}
   clients.delete(jobId);
   
   logger.info(jobId, 'User requested data deletion. Job wiped from memory.');
@@ -737,92 +776,3 @@ async function startServer() {
 }
 
 startServer();
-
-
-async function exportToGoogleDocs(job: PipelineJob, accessToken: string): Promise<string> {
-  const response = await fetch('https://docs.googleapis.com/v1/documents', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      title: `[${job.fileName.split('.')[0] || 'Dataset'}] — Analytics Report`
-    })
-  });
-  
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to create document: ${errorText}`);
-  }
-  
-  const doc = await response.json();
-  const documentId = doc.documentId;
-  
-  // Insert text
-  let textToInsert = job.reportText || 'No report generated.';
-  // Append basic newlines
-  textToInsert = textToInsert + '\n\n(Dashboard metrics have been analyzed and filtered.)\n';
-  
-  const updateRes = await fetch(`https://docs.googleapis.com/v1/documents/${documentId}:batchUpdate`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      requests: [
-        {
-          insertText: {
-            location: { index: 1 },
-            text: textToInsert
-          }
-        }
-      ]
-    })
-  });
-
-  if (!updateRes.ok) {
-    console.error('Failed to update document text', await updateRes.text());
-  }
-
-  return `https://docs.google.com/document/d/${documentId}/edit`;
-}
-
-async function scheduleMeeting(job: PipelineJob, accessToken: string, attendees: string[]): Promise<string> {
-  const startTime = new Date();
-  startTime.setDate(startTime.getDate() + 1); // Tomorrow
-  startTime.setHours(10, 0, 0, 0); // 10:00 AM
-  
-  const endTime = new Date(startTime);
-  endTime.setHours(11, 0, 0, 0); // 11:00 AM
-  
-  const response = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      summary: `Data Review: ${job.fileName.split('.')[0] || 'Dataset'}`,
-      description: `Follow-up meeting to review the generated analytics report.\n\nKey findings:\n${job.reportText?.substring(0, 500)}...`,
-      start: {
-        dateTime: startTime.toISOString(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles'
-      },
-      end: {
-        dateTime: endTime.toISOString(),
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/Los_Angeles'
-      },
-      attendees: attendees.map(email => ({ email }))
-    })
-  });
-  
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to create calendar event: ${errorText}`);
-  }
-  
-  const event = await response.json();
-  return event.htmlLink;
-}

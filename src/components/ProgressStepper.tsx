@@ -10,11 +10,13 @@ interface Props {
 const steps = [
   { id: 'cleaning', label: '2. Clean' },
   { id: 'planning', label: '3. Plan Dashboard' },
-  { id: 'waiting_for_dashboard', label: '4. Analyze & Build' }
+  { id: 'waiting_for_dashboard', label: '4. Analyze & Build' },
+  { id: 'emailing', label: '5. Deliver' }
 ];
 
 export function ProgressStepper({ status }: Props) {
-  const currentStepIndex = steps.findIndex(s => s.id === status);
+  const normalizedStatus = status === 'delivery_error' ? 'emailing' : status;
+  const currentStepIndex = steps.findIndex(s => s.id === normalizedStatus);
   
   return (
     <div className="space-y-8 flex flex-col h-full relative">
@@ -43,9 +45,10 @@ export function ProgressStepper({ status }: Props) {
       
       {steps.map((step, stepIdx) => {
         const isComplete = currentStepIndex > stepIdx || status === 'complete';
-        const isCurrent = currentStepIndex === stepIdx && status !== 'complete' && status !== 'error';
-        const isFuture = !isComplete && !isCurrent && status !== 'error';
-        const isError = status === 'error' && currentStepIndex === stepIdx;
+        const isErrorState = status === 'error' || status === 'delivery_error';
+        const isCurrent = currentStepIndex === stepIdx && status !== 'complete' && !isErrorState;
+        const isFuture = !isComplete && !isCurrent && !isErrorState;
+        const isError = isErrorState && currentStepIndex === stepIdx;
         return (
           <div key={step.id} className={`flex items-start gap-4 transition-opacity duration-500 ${isFuture ? 'opacity-40' : ''}`}>
             <motion.div 

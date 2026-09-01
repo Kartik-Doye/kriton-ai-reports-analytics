@@ -16,6 +16,7 @@ export interface CleaningPlan {
 }
 
 export interface DashboardPage {
+  anomalies?: { description: string }[];
   id: string;
   title: string;
   kpis: {
@@ -46,10 +47,13 @@ export interface PipelineJob {
   id: string;
   jobToken: string;
   email: string;
+  timestamp?: number;
   fileName: string;
   originalBuffer: Buffer;
   cleanedData?: any[];
   stats?: any;
+  dataQuality?: { totalRecords: number; rowsExcluded: number };
+  analysisMode?: 'brief' | 'detailed';
   cleaningLog?: string;
   dashboardSpec?: DashboardSpec;
   status: 'pending' | 'cleaning' | 'planning' | 'waiting_for_dashboard' | 'emailing' | 'complete' | 'error' | 'delivery_error';

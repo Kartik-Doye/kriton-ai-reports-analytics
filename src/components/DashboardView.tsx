@@ -4,7 +4,7 @@ import { LineChart, Line, BarChart, Bar, PieChart, Pie, XAxis, YAxis, CartesianG
 import * as htmlToImage from 'html-to-image';
 import Papa from 'papaparse';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageCircle, X, Send, Bot, User } from 'lucide-react';
+import { MessageCircle, X, Send, Bot, User, AlertTriangle, Database, ShieldAlert } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { fetchWithRetry } from '../utils/retry';
 
@@ -14,11 +14,12 @@ interface Props {
   spec: DashboardSpec;
   data: any[];
   autoExport: boolean;
+  dataQuality?: { totalRecords: number; rowsExcluded: number };
 }
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-export function DashboardView({ jobId, jobToken, spec, data, autoExport }: Props) {
+export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQuality }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [exported, setExported] = useState(false);
   const [viewMode, setViewMode] = useState<'detailed' | 'summary'>(() => {

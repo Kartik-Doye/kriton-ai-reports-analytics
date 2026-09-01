@@ -14,7 +14,7 @@ import FireSymbol from './components/FireSymbol';
 import { ThemeToggle } from './components/ThemeToggle';
 import { AmbientBackground } from './components/AmbientBackground';
 import { PipelineJob, DashboardSpec } from './types';
-import { CheckCircle2, Circle, Loader2, Mail, FileText, FileJson, Calendar as CalendarIcon } from 'lucide-react';
+import { CheckCircle2, Circle, Loader2, Mail, FileText, FileJson, Calendar as CalendarIcon, RefreshCw } from 'lucide-react';
 import { getAccessToken } from './auth';
 import { motion, AnimatePresence } from 'motion/react';
 import { fetchWithRetry } from './utils/retry';
@@ -26,19 +26,14 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [dashboardSpec, setDashboardSpec] = useState<DashboardSpec | null>(null);
   const [cleanedData, setCleanedData] = useState<any[] | null>(null);
+  const [dataQuality, setDataQuality] = useState<any>(null);
   const [isEmailing, setIsEmailing] = useState(false);
   const [emailStatus, setEmailStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [emailErrorMsg, setEmailErrorMsg] = useState('');
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
-
-  const [isExportingDocs, setIsExportingDocs] = useState(false);
-  const [docsUrl, setDocsUrl] = useState('');
-  
-  const [isScheduling, setIsScheduling] = useState(false);
-  const [calendarUrl, setCalendarUrl] = useState('');
-
-
-
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [startTime, setStartTime] = useState<number | null>(null);
+  const [endTime, setEndTime] = useState<number | null>(null);
 
   const resetSession = useCallback(() => {
     setJobId(null);
@@ -46,8 +41,11 @@ export default function App() {
     setLogs([]);
     setDashboardSpec(null);
     setCleanedData(null);
+    setDataQuality(null);
     setEmailStatus('idle');
     setIsEmailModalOpen(false);
+    setStartTime(null);
+    setEndTime(null);
   }, []);
 
   useEffect(() => {
@@ -77,6 +75,8 @@ export default function App() {
             setJobToken(token);
     setJobStatus('cleaning');
     setLogs([]);
+    setStartTime(Date.now());
+    setEndTime(null);
   };
 
   
@@ -95,68 +95,36 @@ export default function App() {
     }
   };
 
-  const handleJobComplete = () => {
-    setJobStatus('complete');
+  const handleRefreshData = async () => {
+    if (!confirm('Are you sure you want to re-run the pipeline with the current dataset?')) return;
+    try {
+      setJobStatus('cleaning');
+      setLogs([]);
+      setDashboardSpec(null);
+      setCleanedData(null);
+      setStartTime(Date.now());
+      setEndTime(null);
+      setRefreshTrigger(prev => prev + 1);
+      await fetchWithRetry(`/api/job/${jobId}/refresh?token=${jobToken}`, { method: 'POST' });
+    } catch (e) {
+      console.error('Failed to refresh data:', e);
+      setJobStatus('error');
+    }
   };
-
 
   
-  const handleExportDocs = async () => {
-    if (!jobId) return;
-    const confirmed = window.confirm('Export Executive Summary to a new Google Doc in your Drive?');
-    if (!confirmed) return;
-    
-    setIsExportingDocs(true);
-    setDocsUrl('');
-    try {
-      const token = await getAccessToken();
-      if (!token) throw new Error('Not authenticated');
-      
-      const res = await fetchWithRetry(`/api/job/${jobId}/export-docs`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'x-job-token': jobToken!
-        }
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setDocsUrl(data.url);
-    } catch (err: any) {
-      alert('Failed to export to Google Docs: ' + err.message);
-    } finally {
-      setIsExportingDocs(false);
-    }
+  const handleRestoreJob = (id: string, token: string, status: string) => {
+    setJobId(id);
+    setJobToken(token);
+    setJobStatus(status as any);
+    setLogs(['Restoring session...']);
+    setStartTime(Date.now());
+    setEndTime(null);
   };
 
-  const handleScheduleMeeting = async () => {
-    if (!jobId) return;
-    const confirmed = window.confirm('Schedule a follow-up meeting for tomorrow at 10 AM on your Google Calendar?');
-    if (!confirmed) return;
-    
-    setIsScheduling(true);
-    setCalendarUrl('');
-    try {
-      const token = await getAccessToken();
-      if (!token) throw new Error('Not authenticated');
-      
-      const res = await fetchWithRetry(`/api/job/${jobId}/schedule-meeting`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'x-job-token': jobToken!,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ attendees: [] })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setCalendarUrl(data.url);
-    } catch (err: any) {
-      alert('Failed to schedule meeting: ' + err.message);
-    } finally {
-      setIsScheduling(false);
-    }
+  const handleJobComplete = () => {
+    setJobStatus('complete');
+    setEndTime(Date.now());
   };
 
   const handleEmailReport = async (options: { to: string, cc: string, bcc: string, subject: string, body: string, attachHtml?: boolean }) => {
@@ -225,6 +193,7 @@ export default function App() {
         const data = JSON.parse(e.data);
         setDashboardSpec(data.spec);
         setCleanedData(data.data);
+        setDataQuality(data.dataQuality);
       });
 
       eventSource.addEventListener('error', (e) => {
@@ -246,7 +215,7 @@ export default function App() {
       clearTimeout(retryTimeout);
       eventSource?.close();
     };
-  }, [jobId]);
+  }, [jobId, refreshTrigger]);
 
   return (
     <div className="h-screen bg-transparent flex flex-col  overflow-hidden text-slate-900 dark:text-slate-100 transition-colors relative">
@@ -284,7 +253,7 @@ export default function App() {
                 transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
                 className="w-full max-w-xl"
               >
-                <UploadForm onSuccess={handleUploadSuccess} />
+                <UploadForm onSuccess={handleUploadSuccess} onRestore={handleRestoreJob} />
               </motion.div>
             ) : (
               <motion.div 
@@ -304,7 +273,8 @@ export default function App() {
                         jobId={jobId!}
                         jobToken={jobToken!}
                         spec={dashboardSpec} 
-                        data={cleanedData} 
+                        data={cleanedData}
+                        dataQuality={dataQuality} 
                         autoExport={jobStatus === 'waiting_for_dashboard'}
                       />
                     </motion.div>
@@ -344,40 +314,19 @@ export default function App() {
                         </a>
                         
                         <button 
+                          onClick={handleRefreshData}
+                          className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          Refresh Data
+                        </button>
+                        
+                        <button 
                           onClick={handleDeleteData}
                           className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-red-200/50 dark:border-red-500/20 text-sm font-semibold rounded-xl shadow-sm text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 focus:outline-none transition-all hover:scale-105"
                         >
                           Delete My Data
                         </button>
-
-                        <button 
-                          onClick={handleExportDocs}
-                          disabled={isExportingDocs}
-                          className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105 disabled:opacity-50"
-                        >
-                          {isExportingDocs ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileJson className="w-4 h-4" />}
-                          Export to Docs
-                        </button>
-                        {docsUrl && (
-                          <a href={docsUrl} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline text-sm font-medium self-center flex items-center gap-1">
-                            <CheckCircle2 className="w-4 h-4" /> Open Doc
-                          </a>
-                        )}
-                        
-                        <button 
-                          onClick={handleScheduleMeeting}
-                          disabled={isScheduling}
-                          className="group relative overflow-hidden inline-flex items-center justify-center gap-2 px-6 py-3 border border-slate-200/50 dark:border-white/10 text-sm font-semibold rounded-xl shadow-sm text-slate-700 dark:text-slate-200 bg-white/50 dark:bg-white/5 hover:bg-white dark:hover:bg-white/10 focus:outline-none transition-all hover:scale-105 disabled:opacity-50"
-                        >
-                          {isScheduling ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarIcon className="w-4 h-4" />}
-                          Schedule Review
-                        </button>
-                        {calendarUrl && (
-                          <a href={calendarUrl} target="_blank" rel="noreferrer" className="text-blue-500 hover:underline text-sm font-medium self-center flex items-center gap-1">
-                            <CheckCircle2 className="w-4 h-4" /> View Event
-                          </a>
-                        )}
-
                       </div>
                     </motion.div>
                   )}
@@ -439,6 +388,13 @@ export default function App() {
       <EmailModal isOpen={isEmailModalOpen} onClose={() => setIsEmailModalOpen(false)} onSend={handleEmailReport} status={isEmailing ? 'sending' : emailStatus} jobId={jobId} jobToken={jobToken} />
 
       <footer className="h-10 bg-white/40 dark:bg-black/40 backdrop-blur-xl border-t border-white/20 dark:border-white/10 flex items-center justify-between px-6 flex-shrink-0 transition-colors z-20">
+        <div className="flex items-center gap-2">
+          {jobStatus === 'complete' && startTime && endTime && (
+            <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              Processing Time: {((endTime - startTime) / 1000).toFixed(1)}s
+            </span>
+          )}
+        </div>
       </footer>
     </div>
   );

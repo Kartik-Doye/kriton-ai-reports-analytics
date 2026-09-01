@@ -8,9 +8,10 @@ import { User } from 'firebase/auth';
 
 interface Props {
   onSuccess: (jobId: string, jobToken: string) => void;
+  onRestore?: (jobId: string, jobToken: string, status: string) => void;
 }
 
-export function UploadForm({ onSuccess }: Props) {
+export function UploadForm({ onSuccess, onRestore }: Props) {
   const [email, setEmail] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -19,6 +20,20 @@ export function UploadForm({ onSuccess }: Props) {
   const [previewHeaders, setPreviewHeaders] = useState<string[]>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [needsAuth, setNeedsAuth] = useState(true);
+  const [analysisMode, setAnalysisMode] = useState<"brief"|"detailed">("detailed");
+
+  const [history, setHistory] = useState<any[]>([]);
+  const fetchHistory = useCallback(async (userEmail: string, authToken: string) => {
+    try {
+      const res = await fetch(`/api/jobs?email=${encodeURIComponent(userEmail)}`, {
+        headers: { 'Authorization': `Bearer ${authToken}` }
+      });
+      if (res.ok) {
+        setHistory(await res.json());
+      }
+    } catch(e) {}
+  }, []);
+
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -44,6 +59,7 @@ export function UploadForm({ onSuccess }: Props) {
         setUser(result.user);
         setEmail(result.user.email || '');
         setNeedsAuth(false);
+        fetchHistory(result.user.email || "", result.accessToken);
       }
     } catch (err: any) {
       console.error('Login failed:', err);
@@ -113,6 +129,7 @@ export function UploadForm({ onSuccess }: Props) {
     const formData = new FormData();
     formData.append('email', email);
     formData.append('accessToken', token);
+    formData.append('analysisMode', analysisMode);
     formData.append('file', file);
 
     try {
@@ -241,6 +258,29 @@ export function UploadForm({ onSuccess }: Props) {
             Don't have a file? Download a sample CSV
           </a>
         </div>
+
+      {history.length > 0 && (
+        <div className="mt-8 text-left w-full mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <h3 className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3 px-2">Recent Reports</h3>
+          <div className="space-y-2 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+            {history.map(job => (
+              <button 
+                key={job.id} 
+                type="button"
+                onClick={() => onRestore?.(job.id, job.jobToken || '', job.status)} 
+                className="w-full text-left p-4 rounded-2xl border border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-white/5 transition flex items-center justify-between group"
+              >
+                 <div>
+                   <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 truncate pr-4">{job.fileName}</p>
+                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">{new Date(job.timestamp).toLocaleString()} • {job.status}</p>
+                 </div>
+                 <CheckCircle2 className="w-5 h-5 text-emerald-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
 
         <AnimatePresence>
           {file && previewData.length > 0 && (
