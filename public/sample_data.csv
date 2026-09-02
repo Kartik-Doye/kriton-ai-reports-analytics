@@ -1,0 +1,9 @@
+Date,Product,Region,Sales,Customer_Age
+2023-01-01,Widget A,North,1200,34
+2023-01-02,Widget B,South,950,45
+2023-01-03,Widget A,East,1500,28
+2023-01-04,Widget C,West,,52
+2023-01-05,Widget B,North,800,38
+2023-01-06,Widget A,South,1100,41
+2023-01-07,Widget C,East,1350,30
+2023-01-08,Widget B,West,900,

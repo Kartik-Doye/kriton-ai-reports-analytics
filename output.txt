@@ -1,0 +1,59 @@
+Uploading...
+Upload response: {
+  jobId: '63a73189-782e-4f19-994b-e7513b7f8893',
+  jobToken: 'd967a1d7-b771-4d66-b8de-b84fb9818db5'
+}
+Connecting to SSE...
+SSE chunk: data: {"type":"status","payload":{"status":"pending"}}
+
+event: status
+data: {"status":"cleaning"}
+
+event: log
+data: {"text":"Parsing raw data..."}
+
+event: log
+data: {"text":"Computing statistics (smart sampling for fast planning)..."}
+
+event: log
+data: {"text":"Asking Gemini for cleaning plan..."}
+
+
+SSE chunk: event: log
+data: {"text":"✓ AI Cleaning Plan generated successfully"}
+
+event: log
+data: {"text":"Applying cleaning plan..."}
+
+event: log
+data: {"text":"No cleaning actions required."}
+
+event: status
+data: {"status":"planning"}
+
+event: log
+data: {"text":"Planning dashboard and insights..."}
+
+event: log
+data: {"text":"✓ AI Dashboard Plan generated successfully"}
+
+event: status
+data: {"status":"waiting_for_dashboard"}
+
+event: spec
+data: {"spec":{"pages":[{"id":"exec_overview","title":"Executive Overview","kpis":[{"label":"Total Value","field":"val","agg":"sum"},{"label":"Average Value","field":"val","agg":"avg"},{"label":"Total Records","field":"id","agg":"count"},{"label":"Maximum Value","field":"val","agg":"max"}],"charts":[{"id":"chart_val_by_id","type":"bar","title":"Value by ID","chartTitle":"How does total value distribute across IDs?","xAxisLabel":"ID","yAxisLabel":"Total Value","x":"id","y":"val","agg":"sum"},{"id":"chart_val_trend","type":"line","title":"Value Progression","chartTitle":"What is the trend of value across IDs?","xAxisLabel":"ID","yAxisLabel":"Average Value","x":"id","y":"val","agg":"avg"},{"id":"chart_val_pie","type":"pie","title":"Value Distribution","chartTitle":"What percentage of total value does each ID hold?","xAxisLabel":"ID","yAxisLabel":"Value Share","x":"id","y":"val","agg":"sum"}],"insights":["Higher ID numbers correlate directly with higher observed metric values.","Value distribution shows a strong positive progression across record identifiers."]},{"id":"id_performance","title":"ID Performance Analysis","kpis":[{"label":"Minimum Value","field":"val","agg":"min"},{"label":"Average ID","field":"id","agg":"avg"},{"label":"Maximum ID","field":"id","agg":"max"},{"label":"Sum of Values","field":"val","agg":"sum"}],"charts":[{"id":"chart_avg_val_id","type":"bar","title":"Average Value per ID","chartTitle":"Which ID yields the highest average value?","xAxisLabel":"ID","yAxisLabel":"Average Value","x":"id","y":"val","agg":"avg"},{"id":"chart_id_count","type":"bar","title":"Record Count by ID","chartTitle":"How are entries distributed per ID?","xAxisLabel":"ID","yAxisLabel":"Record Count","x":"id","y":"val","agg":"count"},{"id":"chart_max_val_line","type":"line","title":"Peak Value Trajectory","chartTitle":"How does peak value scale with ID?","xAxisLabel":"ID","yAxisLabel":"Peak Value","x":"id","y":"val","agg":"max"}],"insights":["Record frequency is balanced while metric values scale upward with ID sequence.","Peak value performance is achieved at the highest recorded ID tier."]},{"id":"value_deep_dive","title":"Value Deep-Dive","kpis":[{"label":"Value Range Max","field":"val","agg":"max"},{"label":"Value Range Min","field":"val","agg":"min"},{"label":"Mean Value","field":"val","agg":"avg"},{"label":"ID Record Count","field":"id","agg":"count"}],"charts":[{"id":"chart_val_sum_bar","type":"bar","title":"Summed Value Comparison","chartTitle":"What is the cumulative value for each ID?","xAxisLabel":"ID","yAxisLabel":"Sum of Value","x":"id","y":"val","agg":"sum"},{"id":"chart_val_avg_pie","type":"pie","title":"Mean Value Proportion","chartTitle":"How do mean values compare proportionally?","xAxisLabel":"ID","yAxisLabel":"Mean Value","x":"id","y":"val","agg":"avg"},{"id":"chart_min_val_line","type":"line","title":"Minimum Value Trend","chartTitle":"Does the baseline value increase across IDs?","xAxisLabel":"ID","yAxisLabel":"Minimum Value","x":"id","y":"val","agg":"min"}],"insights":["Baseline minimum values consistently elevate alongside higher ID metrics.","Overall performance demonstrates predictable linear escalation across all tracked fields."]}]},"data":[{"id":1,"val":10},{"id":2,"val":20},{"id":3,"val":30}]}
+
+event: log
+data: {"text":"Generating narrative report..."}
+
+event: log
+data: {"text":"✓ AI Executive Narrative generated successfully"}
+
+event: log
+data: {"text":"✓ Interactive HTML export generated successfully"}
+
+
+SSE chunk: event: status
+data: {"status":"complete"}
+
+
