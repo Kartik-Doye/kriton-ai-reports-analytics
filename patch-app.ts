@@ -1,22 +1,18 @@
 import fs from 'fs';
-const code = fs.readFileSync('src/App.tsx', 'utf8');
+let code = fs.readFileSync('src/App.tsx', 'utf8');
 
-const replacement = `
-  const handleRestoreJob = (id: string, token: string, status: string) => {
-    setJobId(id);
-    setJobToken(token);
-    setJobStatus(status as any);
-    setLogs(['Restoring session...']);
-    setStartTime(Date.now());
-    setEndTime(null);
-  };
-`;
-
-const patched = code.replace(
-  '<UploadForm onSuccess={handleUploadSuccess} />', 
-  '<UploadForm onSuccess={handleUploadSuccess} onRestore={handleRestoreJob} />'
+code = code.replace(
+  'const [dataQuality, setDataQuality] = useState<any>(null);',
+  'const [dataQuality, setDataQuality] = useState<any>(null);\n  const [cleaningLog, setCleaningLog] = useState<string>("");'
 ).replace(
-  'const handleJobComplete = () => {',
-  replacement + '\n  const handleJobComplete = () => {'
+  'setDataQuality(data.dataQuality);',
+  'setDataQuality(data.dataQuality);\n        setCleaningLog(data.cleaningLog || "");'
+).replace(
+  'setDataQuality(null);',
+  'setDataQuality(null);\n    setCleaningLog("");'
+).replace(
+  'dataQuality={dataQuality}',
+  'dataQuality={dataQuality}\n                        cleaningLog={cleaningLog}'
 );
-fs.writeFileSync('src/App.tsx', patched);
+
+fs.writeFileSync('src/App.tsx', code);

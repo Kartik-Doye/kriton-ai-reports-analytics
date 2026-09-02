@@ -15,11 +15,12 @@ interface Props {
   data: any[];
   autoExport: boolean;
   dataQuality?: { totalRecords: number; rowsExcluded: number };
+  cleaningLog?: string;
 }
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQuality }: Props) {
+export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQuality, cleaningLog }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [exported, setExported] = useState(false);
   const [viewMode, setViewMode] = useState<'detailed' | 'summary'>(() => {
@@ -30,7 +31,33 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
   });
   const pages = spec.pages || [];
   const [activeCategoryId, setActiveCategoryId] = useState<string>(pages[0]?.id || '');
+  
+  // Filter out charts that reference non-existent columns or mismatch chart types
+  const schemaKeys = data.length > 0 ? Object.keys(data[0]) : [];
+  
+  const validateChart = (chart: any) => {
+    if (!schemaKeys.includes(chart.x) || (chart.y && !schemaKeys.includes(chart.y))) {
+      return false; // Column does not exist
+    }
+    
+    // Check cardinality for pie charts
+    if (chart.type === 'pie') {
+      const uniqueValues = new Set(data.map(r => String(r[chart.x]))).size;
+      if (uniqueValues > 10) {
+        chart.type = 'bar'; // Auto-convert to bar chart if cardinality is too high
+      }
+    }
+    return true;
+  };
+
   const activePageData = pages.find(p => p.id === activeCategoryId) || pages[0] || { kpis: [], charts: [], insights: [], id: '', title: '' };
+  
+  // Create a validated copy
+  const validatedPageData = {
+    ...activePageData,
+    charts: (activePageData.charts || []).filter(validateChart)
+  };
+
   
   const [drilldown, setDrilldown] = useState<{ chartTitle: string, filterValue: string, dataPoints: any[] } | null>(null);
 
@@ -58,6 +85,9 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
   
   const allColumns = data.length > 0 ? Object.keys(data[0]) : [];
   const [selectedColumns, setSelectedColumns] = useState<Set<string>>(new Set(allColumns.slice(0, 10)));
+  const [sectionsCollapsed, setSectionsCollapsed] = useState<Record<string, boolean>>({});
+  const toggleSection = (id: string) => setSectionsCollapsed(prev => ({ ...prev, [id]: !prev[id] }));
+
 
   const handleChartClick = (e: any, chartSpec: any) => {
     if (!e || !e.activePayload || e.activePayload.length === 0) return;
@@ -247,6 +277,69 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
         </div>
       </div>
       
+      
+      {/* Global Metadata / Data Quality & Cleaning Card */}
+      {(dataQuality || cleaningLog) && (
+        <div className={`mb-6 rounded-xl border overflow-hidden ${theme === 'dark' ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+          {dataQuality && (
+            <div className="p-4 flex flex-wrap items-center gap-6">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg ${theme === 'dark' ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>
+                  <Database className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className={`text-xs font-medium uppercase tracking-wider ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>Total Records</p>
+                  <p className={`text-xl font-bold ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{dataQuality.totalRecords.toLocaleString()}</p>
+                </div>
+              </div>
+              
+              {dataQuality.rowsExcluded > 0 && (
+                <div className="flex items-center gap-3 border-l pl-6 border-slate-300 dark:border-slate-700">
+                  <div className={`p-2 rounded-lg ${theme === 'dark' ? 'bg-amber-900/30 text-amber-400' : 'bg-amber-100 text-amber-600'}`}>
+                    <ShieldAlert className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <p className={`text-xs font-medium uppercase tracking-wider ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>Excluded (Missing/Error)</p>
+                    <p className={`text-xl font-bold ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{dataQuality.rowsExcluded.toLocaleString()} rows</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {cleaningLog && (
+             <div className={`p-4 border-t text-sm ${theme === 'dark' ? 'border-slate-700 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
+               <h4 className="font-semibold mb-2 flex items-center gap-2">
+                 <Zap className="w-4 h-4 text-emerald-500" />
+                 Data Cleaning Actions Applied
+               </h4>
+               <ul className="list-disc pl-5 space-y-1">
+                 {cleaningLog.split('\n').filter(Boolean).map((log, i) => (
+                   <li key={i}>{log}</li>
+                 ))}
+               </ul>
+             </div>
+          )}
+        </div>
+      )}
+
+      {/* Anomalies Section */}
+      {(spec as any).anomalies && (spec as any).anomalies.length > 0 && (
+        <div className={`mb-6 p-4 rounded-xl border ${theme === 'dark' ? 'bg-red-900/10 border-red-900/30' : 'bg-red-50 border-red-100'}`}>
+          <div className="flex items-center gap-2 mb-3">
+            <AlertTriangle className={`w-5 h-5 ${theme === 'dark' ? 'text-red-400' : 'text-red-500'}`} />
+            <h4 className={`font-semibold ${theme === 'dark' ? 'text-red-400' : 'text-red-700'}`}>Statistical Anomalies & Outliers</h4>
+          </div>
+          <ul className="space-y-2">
+            {(spec as any).anomalies.map((anom: any, idx: number) => (
+              <li key={idx} className={`text-sm flex gap-2 items-start ${theme === 'dark' ? 'text-red-200' : 'text-red-900'}`}>
+                <span className="mt-1 flex-shrink-0 w-1.5 h-1.5 rounded-full bg-red-400" />
+                <span>{typeof anom === 'string' ? anom : anom.description}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Category Tabs */}
       {!autoExport && pages.length > 1 && !showRawData && (
         <div className={`mb-6 flex border-b ${theme === 'dark' ? 'border-slate-700' : 'border-slate-200'}`}>
@@ -452,6 +545,7 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
                 <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">All Insights</span>
               </div>
+              {!sectionsCollapsed['insights'] && (
               <ul className="space-y-3">
                 {page.insights.map((insight, idx) => (
                   <li key={idx} className="text-xs text-white leading-relaxed font-serif italic">
@@ -459,6 +553,7 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
                   </li>
                 ))}
               </ul>
+            )}
             </div>
           </div>
           )}

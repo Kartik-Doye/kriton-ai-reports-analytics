@@ -27,6 +27,7 @@ export default function App() {
   const [dashboardSpec, setDashboardSpec] = useState<DashboardSpec | null>(null);
   const [cleanedData, setCleanedData] = useState<any[] | null>(null);
   const [dataQuality, setDataQuality] = useState<any>(null);
+  const [cleaningLog, setCleaningLog] = useState<string>("");
   const [isEmailing, setIsEmailing] = useState(false);
   const [emailStatus, setEmailStatus] = useState<'idle' | 'success' | 'error'>('idle');
   const [emailErrorMsg, setEmailErrorMsg] = useState('');
@@ -42,6 +43,7 @@ export default function App() {
     setDashboardSpec(null);
     setCleanedData(null);
     setDataQuality(null);
+    setCleaningLog("");
     setEmailStatus('idle');
     setIsEmailModalOpen(false);
     setStartTime(null);
@@ -194,6 +196,7 @@ export default function App() {
         setDashboardSpec(data.spec);
         setCleanedData(data.data);
         setDataQuality(data.dataQuality);
+        setCleaningLog(data.cleaningLog || "");
       });
 
       eventSource.addEventListener('error', (e) => {
@@ -274,7 +277,8 @@ export default function App() {
                         jobToken={jobToken!}
                         spec={dashboardSpec} 
                         data={cleanedData}
-                        dataQuality={dataQuality} 
+                        dataQuality={dataQuality}
+                        cleaningLog={cleaningLog} 
                         autoExport={jobStatus === 'waiting_for_dashboard'}
                       />
                     </motion.div>

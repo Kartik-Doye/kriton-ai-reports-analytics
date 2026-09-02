@@ -2,29 +2,30 @@ import Papa from 'papaparse';
 import * as xlsx from 'xlsx';
 import { CleaningPlan } from '../types.js';
 
-export function parseFile(buffer: Buffer, fileName: string): any[] {
+export function parseFile(buffer: Buffer, fileName: string): { data: any[], warnings: string[] } {
   const ext = fileName.split('.').pop()?.toLowerCase();
   if (ext === 'csv') {
     const result = Papa.parse(buffer.toString('utf-8'), { header: true, skipEmptyLines: true });
-    return result.data;
+    const warnings = duplicateWarnings > 0 ? [`Found ${duplicateWarnings} duplicate column headers. They have been renamed.`] : [];
+    return { data: result.data, warnings };
   } else if (ext === 'xls' || ext === 'xlsx') {
     const workbook = xlsx.read(buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
-    return xlsx.utils.sheet_to_json(sheet);
+    return { data: xlsx.utils.sheet_to_json(sheet), warnings: [] };
   } else if (ext === 'json') {
     try {
       const data = JSON.parse(buffer.toString('utf-8'));
-      if (Array.isArray(data)) return data;
+      if (Array.isArray(data)) return { data, warnings: [] };
       // Handle cases where data might be nested inside a property
       for (const key in data) {
-        if (Array.isArray(data[key])) return data[key];
+        if (Array.isArray(data[key])) return { data: data[key], warnings: [] };
       }
     } catch (e) {
       console.error('Failed to parse JSON', e);
     }
   }
-  return [];
+  return { data: [], warnings: [] };
 }
 
 export function sampleData(data: any[], maxRows: number = 500): any[] {
@@ -130,9 +131,23 @@ export function applyCleaningPlan(data: any[], plan: CleaningPlan): { cleanedDat
           }
         } else {
           // parse type
+
+          // parse type
           if (colPlan.type === 'number') {
+            if (typeof val === 'string') {
+              // basic currency stripping
+              val = val.replace(/[^0-9.-]+/g,"");
+            }
             row[col] = Number(val) || 0;
+          } else if (colPlan.type === 'date') {
+            const parsed = new Date(val);
+            if (!isNaN(parsed.getTime())) {
+              row[col] = parsed.toISOString().split('T')[0]; // Store as YYYY-MM-DD
+            } else {
+              row[col] = null;
+            }
           }
+
         }
         return true;
       });

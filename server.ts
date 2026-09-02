@@ -215,7 +215,7 @@ app.get('/api/job/:jobId/stream', (req: Request, res: Response) => {
   res.write(`event: status\ndata: ${JSON.stringify({ status: job.status })}\n\n`);
   if (job.dashboardSpec && job.cleanedData) {
     // Note: Don't send the entire data on every reconnect unless we need to, but the client needs it to render
-    res.write(`event: spec\ndata: ${JSON.stringify({ spec: job.dashboardSpec, data: job.cleanedData, stats: job.stats, dataQuality: job.dataQuality })}\n\n`);
+    res.write(`event: spec\ndata: ${JSON.stringify({ spec: job.dashboardSpec, data: job.cleanedData, stats: job.stats, dataQuality: job.dataQuality, cleaningLog: job.cleaningLog })}\n\n`);
   }
 
 
@@ -429,7 +429,10 @@ async function runPipeline(job: PipelineJob) {
   sendEvent(job.id, 'status', { status: 'cleaning' });
   sendEvent(job.id, 'log', { text: 'Parsing raw data...' });
 
-  const rawData = parseFile(job.originalBuffer, job.fileName);
+  const { data: rawData, warnings: parseWarnings } = parseFile(job.originalBuffer, job.fileName);
+  if (parseWarnings && parseWarnings.length > 0) {
+    parseWarnings.forEach(w => sendEvent(job.id, 'log', { text: `Warning: ${w}` }));
+  }
   if (rawData.length === 0) throw new Error('File has no data rows');
 
   sendEvent(job.id, 'log', { text: `Computing statistics (smart sampling for fast planning)...` });
@@ -618,7 +621,7 @@ async function runPipeline(job: PipelineJob) {
   job.dashboardSpec = dashboardSpec;
 
   sendEvent(job.id, 'status', { status: 'waiting_for_dashboard' });
-  sendEvent(job.id, 'spec', { spec: dashboardSpec, data: cleanedData });
+  sendEvent(job.id, 'spec', { spec: dashboardSpec, data: cleanedData, stats: job.stats, dataQuality: job.dataQuality, cleaningLog: job.cleaningLog });
   sendEvent(job.id, 'log', { text: 'Generating narrative report...' });
 
   // Stage 4 - Report (parallel with client building dashboard)
