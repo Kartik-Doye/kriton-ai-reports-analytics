@@ -4,7 +4,10 @@ import { LineChart, Line, BarChart, Bar, PieChart, Pie, XAxis, YAxis, CartesianG
 import * as htmlToImage from 'html-to-image';
 import * as Papa from 'papaparse';
 import { motion, AnimatePresence } from 'motion/react';
-import { MessageCircle, X, Send, Bot, User, AlertTriangle, Database, ShieldAlert } from 'lucide-react';
+import { 
+  MessageCircle, X, Send, Bot, User, AlertTriangle, Database, ShieldAlert,
+  Zap, ChevronRight, ChevronDown, TrendingUp, TrendingDown, Filter, Layers, BarChart3, PieChart as PieIcon, Sparkles
+} from 'lucide-react';
 import Markdown from 'react-markdown';
 import { fetchWithRetry } from '../utils/retry';
 
@@ -23,6 +26,7 @@ const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQuality, cleaningLog }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [exported, setExported] = useState(false);
+  const [showAllCharts, setShowAllCharts] = useState(false);
   const [viewMode, setViewMode] = useState<'detailed' | 'summary'>(() => {
     return (localStorage.getItem('dashboard_view_mode') as 'detailed' | 'summary') || 'detailed';
   });
@@ -72,7 +76,7 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
 
 
   const [dataToUse, setDataToUse] = useState<any[]>(data);
-  const [crossFilter, setCrossFilter] = useState<{ field: string, value: string } | null>(null);
+  const [crossFilter, setCrossFilter] = useState<{ field: string; value: string; chartId?: string } | null>(null);
   const [showRawData, setShowRawData] = useState(false);
   
   useEffect(() => {
@@ -88,15 +92,141 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
   const [sectionsCollapsed, setSectionsCollapsed] = useState<Record<string, boolean>>({});
   const toggleSection = (id: string) => setSectionsCollapsed(prev => ({ ...prev, [id]: !prev[id] }));
 
+  // Detect if a time series dimension exists in the dataset
+  const timeSeriesDimension = useMemo(() => {
+    if (!data || data.length === 0) return null;
+    const sample = data.slice(0, 25);
+    const keys = Object.keys(data[0]);
+    // 1. Column name keywords
+    const namedTimeCol = keys.find(k => /date|time|timestamp|created|period|year|month|day/i.test(k));
+    if (namedTimeCol) return namedTimeCol;
+    // 2. Parseable dates in sample
+    for (const key of keys) {
+      let validCount = 0;
+      for (const row of sample) {
+        const val = row[key];
+        if (val && typeof val !== 'number') {
+          const parsed = Date.parse(String(val));
+          if (!isNaN(parsed) && String(val).trim().length >= 4) {
+            validCount++;
+          }
+        }
+      }
+      if (validCount >= Math.min(10, Math.floor(sample.length * 0.7))) {
+        return key;
+      }
+    }
+    return null;
+  }, [data]);
 
-  const handleChartClick = (e: any, chartSpec: any) => {
-    if (!e || !e.activePayload || e.activePayload.length === 0) return;
-    const xVal = e.activePayload[0].payload.x;
+  // Thematic grouping of charts with hard limit of 12 by default
+  const thematicGroups = useMemo(() => {
+    const allPageCharts = [...(validatedPageData.charts || [])];
+    if (showAllCharts && (validatedPageData as any).hiddenCharts) {
+      allPageCharts.push(...(validatedPageData as any).hiddenCharts.filter(validateChart));
+    }
     
-    if (crossFilter && crossFilter.field === chartSpec.x && crossFilter.value === String(xVal)) {
+    // Apply hard limit (12) if showAllCharts is false
+    const HARD_LIMIT = 12;
+    const chartsToCategorize = showAllCharts ? allPageCharts : allPageCharts.slice(0, HARD_LIMIT);
+
+    const timeSeriesCharts: any[] = [];
+    const distributionCharts: any[] = [];
+    const comparativeCharts: any[] = [];
+
+    chartsToCategorize.forEach(chart => {
+      const isTime = chart.type === 'line' || /date|time|year|month|day|created/i.test(chart.x);
+      if (isTime) {
+        timeSeriesCharts.push(chart);
+      } else if (chart.type === 'pie' || (chart.type === 'bar' && chart.agg === 'count')) {
+        distributionCharts.push(chart);
+      } else {
+        comparativeCharts.push(chart);
+      }
+    });
+
+    const groups: {
+      id: string;
+      title: string;
+      description: string;
+      icon: any;
+      charts: any[];
+    }[] = [];
+
+    if (timeSeriesCharts.length > 0) {
+      groups.push({
+        id: 'temporal_trends',
+        title: 'Time Series & Trends',
+        description: 'Chronological progression, baseline comparisons, and trajectory patterns',
+        icon: TrendingUp,
+        charts: timeSeriesCharts
+      });
+    }
+
+    if (distributionCharts.length > 0) {
+      groups.push({
+        id: 'categorical_distributions',
+        title: 'Distributions & Categorical Breakdown',
+        description: 'Frequency segments, share of total, and proportional splits across categories',
+        icon: PieIcon,
+        charts: distributionCharts
+      });
+    }
+
+    if (comparativeCharts.length > 0) {
+      groups.push({
+        id: 'metric_comparisons',
+        title: 'Comparative Metrics & Aggregations',
+        description: 'Numerical aggregates, cross-dimensional comparisons, and key performance metrics',
+        icon: BarChart3,
+        charts: comparativeCharts
+      });
+    }
+
+    if (groups.length === 0 && chartsToCategorize.length > 0) {
+      groups.push({
+        id: 'core_visualizations',
+        title: 'Primary Analytics & Visualizations',
+        description: 'Key metrics and patterns discovered across the dataset',
+        icon: BarChart3,
+        charts: chartsToCategorize
+      });
+    }
+
+    return groups;
+  }, [validatedPageData.charts, (validatedPageData as any).hiddenCharts, showAllCharts]);
+
+  const totalAvailableChartsCount = (validatedPageData.charts?.length || 0) + ((validatedPageData as any).hiddenCharts?.length || 0);
+
+  const [collapsedThematicGroups, setCollapsedThematicGroups] = useState<Record<string, boolean>>({});
+  const toggleThematicGroup = (groupId: string) => {
+    setCollapsedThematicGroups(prev => ({ ...prev, [groupId]: !prev[groupId] }));
+  };
+  const expandAllGroups = () => setCollapsedThematicGroups({});
+  const collapseAllGroups = () => {
+    const allC: Record<string, boolean> = {};
+    thematicGroups.forEach(g => { allC[g.id] = true; });
+    setCollapsedThematicGroups(allC);
+  };
+
+  const handleChartClick = (chartSpec: any, e: any) => {
+    let xVal: string | null = null;
+    if (e && e.activePayload && e.activePayload.length > 0) {
+      xVal = String(e.activePayload[0].payload.x);
+    } else if (e && e.payload && e.payload.x !== undefined) {
+      xVal = String(e.payload.x);
+    } else if (e && e.name !== undefined) {
+      xVal = String(e.name);
+    } else if (e && e.x !== undefined) {
+      xVal = String(e.x);
+    }
+    
+    if (!xVal) return;
+    
+    if (crossFilter && crossFilter.field === chartSpec.x && crossFilter.value === xVal) {
       setCrossFilter(null);
     } else {
-      setCrossFilter({ field: chartSpec.x, value: String(xVal) });
+      setCrossFilter({ field: chartSpec.x, value: xVal, chartId: chartSpec.id });
     }
   };
 
@@ -203,19 +333,49 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
 
   const processKpiWithDelta = (kpi: any) => {
     const currentValue = computeKpiValue(kpi, dataToUse);
-    
-    const mid = Math.floor(dataToUse.length / 2);
-    const firstHalfValue = computeKpiValue(kpi, dataToUse.slice(0, mid));
-    const secondHalfValue = computeKpiValue(kpi, dataToUse.slice(mid));
-    
     let delta = 0;
-    if (firstHalfValue !== 0) {
-      delta = Math.round((((secondHalfValue - firstHalfValue) / Math.abs(firstHalfValue)) * 100) * 100) / 100;
+    const sparkline: { value: number }[] = [];
+    const hasTimeSeries = Boolean(timeSeriesDimension);
+
+    // Prepare chronological dataset for historical baseline comparison and sparkline
+    let chronologicalData = [...dataToUse];
+    if (timeSeriesDimension) {
+      chronologicalData.sort((a, b) => {
+        const tA = new Date(a[timeSeriesDimension]).getTime() || 0;
+        const tB = new Date(b[timeSeriesDimension]).getTime() || 0;
+        return tA - tB;
+      });
     }
-    
+
+    if (chronologicalData.length >= 4) {
+      const mid = Math.floor(chronologicalData.length / 2);
+      const baselineData = chronologicalData.slice(0, mid);
+      const currentPeriodData = chronologicalData.slice(mid);
+
+      const baselineVal = computeKpiValue(kpi, baselineData);
+      const currentPeriodVal = computeKpiValue(kpi, currentPeriodData);
+
+      if (baselineVal !== 0) {
+        delta = Math.round(((currentPeriodVal - baselineVal) / Math.abs(baselineVal)) * 1000) / 10;
+      }
+
+      // Generate 8-10 points for sparkline across chronological slices
+      const numBuckets = Math.min(10, Math.floor(chronologicalData.length / 2));
+      const bucketSize = Math.max(1, Math.floor(chronologicalData.length / numBuckets));
+      for (let i = 0; i < numBuckets; i++) {
+        const bucket = chronologicalData.slice(i * bucketSize, (i + 1) * bucketSize);
+        if (bucket.length > 0) {
+          sparkline.push({ value: computeKpiValue(kpi, bucket) });
+        }
+      }
+    }
+
     return {
       formatted: formatKpi(currentValue),
-      delta: isNaN(delta) ? 0 : delta
+      delta: isNaN(delta) ? 0 : delta,
+      sparkline,
+      hasTimeSeries,
+      timeCol: timeSeriesDimension
     };
   };
 
@@ -432,7 +592,12 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
       ) : (
         <>
           {/* Pages Render */}
-          {(autoExport ? [pages[0]] : [activePageData]).map(page => (
+          {(autoExport ? [{ ...pages[0], charts: (pages[0]?.charts || []).filter(validateChart) }] : [validatedPageData]).map(page => {
+            const maxCharts = showAllCharts ? undefined : 12;
+            const renderedCharts = page.charts.slice(0, autoExport ? 2 : maxCharts);
+            const hasMoreCharts = !autoExport && page.charts.length > 12;
+            
+            return (
             <div key={page.id} className="mb-12">
               {autoExport && (
                 <h2 className={`text-xl font-bold mb-4 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>Snapshot: {page.title}</h2>
@@ -457,95 +622,358 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
 
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-4 mb-6">
             {page.kpis.map((kpi, idx) => {
-              const { formatted, delta } = processKpiWithDelta(kpi);
+              const { formatted, delta, sparkline, hasTimeSeries, timeCol } = processKpiWithDelta(kpi);
               return (
-                <div key={idx} className={`p-4 rounded-xl border flex flex-col justify-between ${theme === 'dark' ? 'bg-slate-800/80 border-slate-700' : 'bg-blue-50/30 border-slate-100'}`}>
-                  <p className={`text-xs font-medium mb-1 truncate ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`} title={kpi.label}>{kpi.label}</p>
-                  <div className="flex items-end justify-between gap-2 mt-1">
-                    <p className={`text-2xl font-bold truncate ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`} title={String(formatted)}>{formatted}</p>
-                    {delta !== 0 && (
-                      <span className={`text-[10px] font-bold flex items-center mb-1 ${delta > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {delta > 0 ? '↑' : '↓'} {Math.abs(delta).toFixed(1)}%
+                <div 
+                  key={idx} 
+                  className={`p-4 rounded-2xl border flex flex-col justify-between transition-all hover:shadow-md ${
+                    theme === 'dark' ? 'bg-slate-800/80 border-slate-700/60' : 'bg-white border-slate-200/90 shadow-sm'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-1 mb-1">
+                    <p 
+                      className={`text-xs font-semibold uppercase tracking-wider truncate ${
+                        theme === 'dark' ? 'text-slate-400' : 'text-slate-500'
+                      }`} 
+                      title={kpi.label}
+                    >
+                      {kpi.label}
+                    </p>
+                    {hasTimeSeries && (
+                      <span 
+                        className="text-[9px] px-1.5 py-0.5 rounded font-semibold whitespace-nowrap bg-blue-500/10 text-blue-500" 
+                        title={`Baseline comparison calculated via chronological dimension "${timeCol}"`}
+                      >
+                        vs Baseline
                       </span>
                     )}
                   </div>
+
+                  <div className="flex items-baseline justify-between gap-2 mt-2">
+                    <p 
+                      className={`text-2xl font-bold tracking-tight truncate ${
+                        theme === 'dark' ? 'text-white' : 'text-slate-900'
+                      }`} 
+                      title={String(formatted)}
+                    >
+                      {formatted}
+                    </p>
+
+                    {delta !== 0 && (
+                      <div 
+                        className={`flex items-center gap-0.5 text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap ${
+                          delta > 0 
+                            ? 'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400' 
+                            : 'bg-rose-500/10 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400'
+                        }`}
+                      >
+                        {delta > 0 ? (
+                          <TrendingUp className="w-3.5 h-3.5" />
+                        ) : (
+                          <TrendingDown className="w-3.5 h-3.5" />
+                        )}
+                        <span>{delta > 0 ? '+' : ''}{delta.toFixed(1)}%</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {sparkline && sparkline.length > 0 && (
+                    <div className="h-8 w-full mt-3 pt-1 border-t border-slate-100 dark:border-slate-700/50">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={sparkline}>
+                          <Line 
+                            type="monotone" 
+                            dataKey="value" 
+                            stroke={delta >= 0 ? '#10b981' : '#f43f5e'} 
+                            strokeWidth={2} 
+                            dot={false} 
+                            isAnimationActive={false} 
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
 
-          {(viewMode === 'detailed' || autoExport) && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-6">
-              {page.charts.slice(0, autoExport ? 2 : undefined).map((chart, idx) => {
-              const chartData = processChartData(chart);
-              if (!isValidChart(chart, chartData)) return null;
-              const axisColor = theme === 'dark' ? '#94a3b8' : '#64748b';
-              const tooltipStyle = {
-                backgroundColor: theme === 'dark' ? 'rgba(0, 0, 0, 0.8)' : 'rgba(255, 255, 255, 0.8)',
-                color: theme === 'dark' ? '#fff' : '#000',
-                borderRadius: '8px', 
-                border: theme === 'dark' ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid rgba(0, 0, 0, 0.1)', 
-                backdropFilter: 'blur(12px)',
-                boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
-              };
-
-              return (
-                <motion.div 
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.1, duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-                  key={idx} 
-                  className={`group relative overflow-hidden rounded-3xl p-6 shadow-xl h-96 flex flex-col transition-all hover:scale-[1.02] ${theme === 'dark' ? 'bg-black/30 border border-white/10' : 'bg-white/60 border border-black/5'} backdrop-blur-xl`}
-                >
-                  <div className="absolute inset-0 bg-gradient-to-tr from-blue-500/0 via-purple-500/0 to-emerald-500/0 group-hover:from-blue-500/5 group-hover:via-purple-500/5 group-hover:to-emerald-500/5 transition-colors duration-500" />
-                  <h3 className={`text-base font-bold mb-6 tracking-tight relative z-10 ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>{chart.chartTitle || chart.title}</h3>
-                  <div className="flex-1 min-h-0 relative z-10">
-                    <ResponsiveContainer width="99%" height="100%">
-                      {chart.type === 'line' ? (
-                      <LineChart data={chartData} onClick={(e) => handleChartClick(chart, e)} margin={{ top: 5, right: 30, left: 20, bottom: 25 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#e2e8f0'} />
-                        <XAxis dataKey="x" tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.xAxisLabel || chart.x, position: 'insideBottom', offset: -15, fill: axisColor, fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.yAxisLabel || chart.y, angle: -90, position: 'insideLeft', offset: -10, fill: axisColor, fontSize: 12 }} />
-                        <Tooltip formatter={(value: number) => value} contentStyle={tooltipStyle} />
-                        <Legend wrapperStyle={{ fontSize: '12px', color: axisColor, paddingTop: '20px' }} />
-                        <Line type="monotone" dataKey="y" stroke={COLORS[idx % COLORS.length]} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} name={chart.y} />
-                      </LineChart>
-                    ) : chart.type === 'bar' ? (
-                      <BarChart data={chartData} onClick={(e) => handleChartClick(chart, e)} margin={{ top: 5, right: 30, left: 20, bottom: 25 }}>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#e2e8f0'} />
-                        <XAxis dataKey="x" tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.xAxisLabel || chart.x, position: 'insideBottom', offset: -15, fill: axisColor, fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.yAxisLabel || chart.y, angle: -90, position: 'insideLeft', offset: -10, fill: axisColor, fontSize: 12 }} />
-                        <Tooltip formatter={(value: number) => value} contentStyle={tooltipStyle} />
-                        <Legend wrapperStyle={{ fontSize: '12px', color: axisColor, paddingTop: '20px' }} />
-                        <Bar dataKey="y" fill={COLORS[idx % COLORS.length]} radius={[4, 4, 0, 0]} name={chart.y} className="cursor-pointer" />
-                      </BarChart>
-                    ) : (
-                      <PieChart>
-                        <Pie data={chartData} dataKey="y" nameKey="x" cx="50%" cy="50%" innerRadius={60} outerRadius={80} fill="#8884d8" paddingAngle={5} onClick={(e) => handleChartClick(chart, { payload: e })} className="cursor-pointer">
-                          {chartData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip formatter={(value: number) => value} contentStyle={tooltipStyle} />
-                        <Legend wrapperStyle={{ fontSize: '12px', color: axisColor }} />
-                      </PieChart>
-                    )}
-                  </ResponsiveContainer>
-                  </div>
-                </motion.div>
-              );
-            })}
-          </div>
+          {/* Interactive Cross-Filtering Active Banner */}
+          {crossFilter && (
+            <motion.div 
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`mb-6 p-3 px-4 rounded-xl border flex items-center justify-between gap-3 ${
+                theme === 'dark' 
+                  ? 'bg-blue-950/40 border-blue-800/60 text-blue-300' 
+                  : 'bg-blue-50/90 border-blue-200 text-blue-900'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm font-medium">
+                <Filter className="w-4 h-4 text-blue-500" />
+                <span>
+                  Cross-filtering sibling charts by <strong>{crossFilter.field}</strong> = <strong>"{crossFilter.value}"</strong>
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-300 font-semibold">
+                  {dataToUse.length} / {data.length} records
+                </span>
+              </div>
+              <button 
+                onClick={() => setCrossFilter(null)}
+                className={`text-xs px-3 py-1 rounded-lg font-semibold flex items-center gap-1 transition-colors ${
+                  theme === 'dark' 
+                    ? 'bg-blue-900/50 hover:bg-blue-900 text-blue-200' 
+                    : 'bg-white hover:bg-blue-100 text-blue-700 shadow-sm border border-blue-200'
+                }`}
+              >
+                <X className="w-3.5 h-3.5" />
+                Clear Filter
+              </button>
+            </motion.div>
           )}
 
+          {/* Thematic Accordion Wrapper for Chart Sections */}
+          {(viewMode === 'detailed' || autoExport) && (
+            <div className="space-y-6 mb-8">
+              {!autoExport && (
+                <div className="flex items-center justify-between pt-2">
+                  <div className="flex items-center gap-2">
+                    <Layers className={`w-5 h-5 ${theme === 'dark' ? 'text-blue-400' : 'text-blue-600'}`} />
+                    <h3 className={`text-base font-bold tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                      Thematic Chart Sections
+                    </h3>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                      theme === 'dark' ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700'
+                    }`}>
+                      {thematicGroups.reduce((acc, g) => acc + g.charts.length, 0)} Charts {totalAvailableChartsCount > 12 && !showAllCharts && '(Top 12 Shown)'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      onClick={expandAllGroups}
+                      className={`px-2.5 py-1 rounded-lg font-medium transition-colors ${
+                        theme === 'dark' ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      Expand All
+                    </button>
+                    <span className="text-slate-400">|</span>
+                    <button
+                      onClick={collapseAllGroups}
+                      className={`px-2.5 py-1 rounded-lg font-medium transition-colors ${
+                        theme === 'dark' ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      Collapse All
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {thematicGroups.map((group) => {
+                const isCollapsed = Boolean(collapsedThematicGroups[group.id]) && !autoExport;
+                const Icon = group.icon;
+                const axisColor = theme === 'dark' ? '#94a3b8' : '#64748b';
+                const tooltipStyle = {
+                  backgroundColor: theme === 'dark' ? 'rgba(0, 0, 0, 0.85)' : 'rgba(255, 255, 255, 0.95)',
+                  color: theme === 'dark' ? '#fff' : '#000',
+                  borderRadius: '8px', 
+                  border: theme === 'dark' ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid rgba(0, 0, 0, 0.1)', 
+                  backdropFilter: 'blur(12px)',
+                  boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'
+                };
+
+                return (
+                  <div 
+                    key={group.id}
+                    className={`rounded-2xl border overflow-hidden transition-all ${
+                      theme === 'dark' ? 'bg-slate-900/60 border-slate-800' : 'bg-white border-slate-200/90 shadow-sm'
+                    }`}
+                  >
+                    {/* Collapsible Accordion Header */}
+                    <div 
+                      onClick={() => toggleThematicGroup(group.id)}
+                      className={`p-4 flex items-center justify-between cursor-pointer select-none transition-colors ${
+                        theme === 'dark'
+                          ? 'hover:bg-slate-800/50 bg-slate-800/20 border-b border-slate-800/60'
+                          : 'hover:bg-slate-50/80 bg-slate-50/40 border-b border-slate-100'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-xl ${
+                          theme === 'dark' ? 'bg-blue-500/10 text-blue-400' : 'bg-blue-50 text-blue-600'
+                        }`}>
+                          <Icon className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className={`text-sm font-bold tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                              {group.title}
+                            </h4>
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                              theme === 'dark' ? 'bg-slate-800 text-slate-300' : 'bg-slate-200 text-slate-700'
+                            }`}>
+                              {group.charts.length} {group.charts.length === 1 ? 'Chart' : 'Charts'}
+                            </span>
+                          </div>
+                          <p className={`text-xs mt-0.5 ${theme === 'dark' ? 'text-slate-400' : 'text-slate-500'}`}>
+                            {group.description}
+                          </p>
+                        </div>
+                      </div>
+
+                      <button 
+                        type="button"
+                        className={`p-1.5 rounded-lg transition-colors ${
+                          theme === 'dark' ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'
+                        }`}
+                      >
+                        {isCollapsed ? <ChevronRight className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+                      </button>
+                    </div>
+
+                    {/* Collapsible Accordion Body */}
+                    {!isCollapsed && (
+                      <div className="p-5">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+                          {group.charts.map((chart, idx) => {
+                            const chartData = processChartData(chart);
+                            if (!isValidChart(chart, chartData)) return null;
+
+                            return (
+                              <motion.div 
+                                initial={{ opacity: 0, y: 15 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: idx * 0.05, duration: 0.4 }}
+                                key={chart.id || idx} 
+                                className={`group relative overflow-hidden rounded-3xl p-6 shadow-sm h-96 flex flex-col transition-all hover:scale-[1.01] ${
+                                  theme === 'dark' ? 'bg-black/30 border border-white/10' : 'bg-white/60 border border-black/5'
+                                } backdrop-blur-xl`}
+                              >
+                                <div className="flex items-center justify-between mb-4 relative z-10">
+                                  <h3 className={`text-sm font-bold tracking-tight ${theme === 'dark' ? 'text-white' : 'text-slate-900'}`}>
+                                    {chart.chartTitle || chart.title}
+                                  </h3>
+                                  <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-blue-500/10 text-blue-500">
+                                    Click element to cross-filter
+                                  </span>
+                                </div>
+                                <div className="flex-1 min-h-0 relative z-10">
+                                  <ResponsiveContainer width="99%" height="100%">
+                                    {chart.type === 'line' ? (
+                                      <LineChart data={chartData} onClick={(e) => handleChartClick(chart, e)} margin={{ top: 5, right: 30, left: 20, bottom: 25 }}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#e2e8f0'} />
+                                        <XAxis dataKey="x" tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.xAxisLabel || chart.x, position: 'insideBottom', offset: -15, fill: axisColor, fontSize: 12 }} />
+                                        <YAxis tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.yAxisLabel || chart.y, angle: -90, position: 'insideLeft', offset: -10, fill: axisColor, fontSize: 12 }} />
+                                        <Tooltip formatter={(value: number) => value} contentStyle={tooltipStyle} />
+                                        <Legend wrapperStyle={{ fontSize: '12px', color: axisColor, paddingTop: '20px' }} />
+                                        <Line type="monotone" dataKey="y" stroke={COLORS[idx % COLORS.length]} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} name={chart.y} />
+                                      </LineChart>
+                                    ) : chart.type === 'bar' ? (
+                                      <BarChart data={chartData} onClick={(e) => handleChartClick(chart, e)} margin={{ top: 5, right: 30, left: 20, bottom: 25 }}>
+                                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={theme === 'dark' ? '#334155' : '#e2e8f0'} />
+                                        <XAxis dataKey="x" tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.xAxisLabel || chart.x, position: 'insideBottom', offset: -15, fill: axisColor, fontSize: 12 }} />
+                                        <YAxis tick={{ fontSize: 10, fill: axisColor }} axisLine={false} tickLine={false} label={{ value: chart.yAxisLabel || chart.y, angle: -90, position: 'insideLeft', offset: -10, fill: axisColor, fontSize: 12 }} />
+                                        <Tooltip formatter={(value: number) => value} contentStyle={tooltipStyle} />
+                                        <Legend wrapperStyle={{ fontSize: '12px', color: axisColor, paddingTop: '20px' }} />
+                                        <Bar dataKey="y" name={chart.y} radius={[4, 4, 0, 0]} className="cursor-pointer">
+                                          {chartData.map((entry, cIdx) => {
+                                            const isSelected = crossFilter ? entry.x === crossFilter.value : true;
+                                            const isFilterOrigin = crossFilter && crossFilter.chartId === chart.id;
+                                            return (
+                                              <Cell 
+                                                key={`cell-${cIdx}`} 
+                                                fill={COLORS[cIdx % COLORS.length]} 
+                                                fillOpacity={isFilterOrigin ? (isSelected ? 1 : 0.3) : 1}
+                                              />
+                                            );
+                                          })}
+                                        </Bar>
+                                      </BarChart>
+                                    ) : (
+                                      <PieChart>
+                                        <Pie 
+                                          data={chartData} 
+                                          dataKey="y" 
+                                          nameKey="x" 
+                                          cx="50%" 
+                                          cy="50%" 
+                                          innerRadius={60} 
+                                          outerRadius={80} 
+                                          paddingAngle={5} 
+                                          onClick={(entry) => handleChartClick(chart, { activePayload: [{ payload: entry }] })} 
+                                          className="cursor-pointer"
+                                        >
+                                          {chartData.map((entry, cIdx) => {
+                                            const isSelected = crossFilter ? entry.x === crossFilter.value : true;
+                                            const isFilterOrigin = crossFilter && crossFilter.chartId === chart.id;
+                                            return (
+                                              <Cell 
+                                                key={`cell-${cIdx}`} 
+                                                fill={COLORS[cIdx % COLORS.length]} 
+                                                fillOpacity={isFilterOrigin ? (isSelected ? 1 : 0.3) : 1}
+                                              />
+                                            );
+                                          })}
+                                        </Pie>
+                                        <Tooltip formatter={(value: number) => value} contentStyle={tooltipStyle} />
+                                        <Legend wrapperStyle={{ fontSize: '12px', color: axisColor }} />
+                                      </PieChart>
+                                    )}
+                                  </ResponsiveContainer>
+                                </div>
+                              </motion.div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Hard Limit / Show More Button */}
+              {totalAvailableChartsCount > 12 && !autoExport && (
+                <div className="flex justify-center my-6">
+                  {!showAllCharts ? (
+                    <button 
+                      onClick={() => setShowAllCharts(true)} 
+                      className={`px-6 py-2.5 rounded-full text-sm font-bold flex items-center gap-2 shadow-sm transition-all hover:scale-105 ${
+                        theme === 'dark' ? 'bg-blue-600 hover:bg-blue-500 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'
+                      }`}
+                    >
+                      <Layers className="w-4 h-4" />
+                      Show More ({totalAvailableChartsCount - 12} Hidden Insights & Charts Available)
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={() => setShowAllCharts(false)} 
+                      className={`px-6 py-2 rounded-full text-sm font-semibold transition-all ${
+                        theme === 'dark' ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' : 'bg-slate-200 hover:bg-slate-300 text-slate-700'
+                      }`}
+                    >
+                      Show Fewer (Top 12 Charts Focus Mode)
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {(viewMode === 'detailed' || autoExport) && (
           <div className="mt-auto">
             <div className={`p-4 rounded-xl ${theme === 'dark' ? 'bg-slate-950 border border-slate-800' : 'bg-slate-900'}`}>
-              <div className="flex items-center gap-2 mb-3">
+              <div className="flex items-center justify-between mb-3 cursor-pointer group" onClick={() => toggleSection(page.id + '_insights')}>
+                <div className="flex items-center gap-2">
                 <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">All Insights</span>
+                </div>
+                {!autoExport && (
+                  <button className={`p-1 rounded-md transition-colors ${theme === 'dark' ? 'text-slate-400 group-hover:bg-slate-800' : 'text-slate-500 group-hover:bg-slate-200'}`}>
+                      {sectionsCollapsed[page.id + '_insights'] ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+                )}
               </div>
-              {!sectionsCollapsed['insights'] && (
+              {(!sectionsCollapsed[page.id + '_insights'] || autoExport) && (
               <ul className="space-y-3">
                 {page.insights.map((insight, idx) => (
                   <li key={idx} className="text-xs text-white leading-relaxed font-serif italic">
@@ -558,7 +986,7 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
           </div>
           )}
         </div>
-      ))}
+      )})}
       {autoExport && (
         <div className={`text-center p-6 mt-8 rounded-xl font-semibold border ${theme === 'dark' ? 'bg-slate-800/50 text-slate-300 border-slate-700' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>
           Full interactive dashboard with more charts, cross-filtering, and pages available in the online report.

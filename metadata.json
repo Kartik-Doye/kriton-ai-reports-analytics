@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "AutoDashboard Analytics",
+  "description": "Automated dataset analysis and interactive dashboards with thematic chart sections, KPI trend sparklines, and interactive cross-filtering.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

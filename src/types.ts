@@ -61,5 +61,6 @@ export interface PipelineJob {
   reportText?: string;
   reportPdf?: Buffer;
   reportHtml?: Buffer;
+  profilingHtml?: Buffer;
   accessToken?: string;
 }

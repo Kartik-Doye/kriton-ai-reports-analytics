@@ -40,7 +40,7 @@ Each page must have:
   - id: unique string
   - title: descriptive page title (e.g., "Executive Overview", "Time Series Analysis", "Customer Demographics")
   - kpis: an array of 4-6 high-level KPI cards. Each needs a 'label' (e.g. "Total Revenue"), a 'field' (the exact column name), and 'agg' (sum, avg, count, min, max).
-  - charts: an array of 3-6 charts for this page. Each needs an 'id', 'type' (line, bar, pie), 'title', 'chartTitle' (a clear question/statement it answers, e.g. "Revenue Over Time"), 'xAxisLabel', 'yAxisLabel', 'x' (column for x-axis), 'y' (column for y-axis), and 'agg' (sum, avg, count).
+  - charts: an array of charts for this page. IMPORTANT: Limit the TOTAL number of charts across ALL pages to a maximum of 12, prioritizing the most surprising or strongest relationships (e.g., highest correlation). Each needs an 'id', 'type' (line, bar, pie), 'title', 'chartTitle' (a clear question/statement it answers, e.g. "Revenue Over Time"), 'xAxisLabel', 'yAxisLabel', 'x' (column for x-axis), 'y' (column for y-axis), and 'agg' (sum, avg, count).
   - insights: an array of 2-3 string sentences summarizing what a stakeholder should look for on this page.
   - anomalies: an array of 1-3 strings calling out statistically unusual findings, spikes, or outliers relevant to this page (optional).
 

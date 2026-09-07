@@ -44,9 +44,12 @@ function aggregateChart(dataToUse: any[], chartSpec: any) {
 }
 
 function formatNumber(num: number) {
-    if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
-    if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
-    return num.toString();
+    if (num === null || num === undefined || isNaN(num)) return '0';
+    const rounded = Math.round(num * 100) / 100;
+    if (Math.abs(rounded) >= 1000000) {
+        return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(rounded);
+    }
+    return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(rounded);
 }
 
 export async function generateReportPdf(reportText: string, dashboardSpec?: DashboardSpec, cleanedData?: any[]): Promise<Buffer> {

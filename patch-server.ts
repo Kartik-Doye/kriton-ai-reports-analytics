@@ -1,12 +1,15 @@
 import fs from 'fs';
 let code = fs.readFileSync('server.ts', 'utf8');
 
-code = code.replace(
-  "sendEvent(job.id, 'spec', { spec: dashboardSpec, data: cleanedData });",
-  "sendEvent(job.id, 'spec', { spec: dashboardSpec, data: cleanedData, stats: job.stats, dataQuality: job.dataQuality, cleaningLog: job.cleaningLog });"
-).replace(
-  "res.write(`event: spec\\ndata: ${JSON.stringify({ spec: job.dashboardSpec, data: job.cleanedData, stats: job.stats, dataQuality: job.dataQuality })}\\n\\n`);",
-  "res.write(`event: spec\\ndata: ${JSON.stringify({ spec: job.dashboardSpec, data: job.cleanedData, stats: job.stats, dataQuality: job.dataQuality, cleaningLog: job.cleaningLog })}\\n\\n`);"
-);
+// Remove nodemailer import
+code = code.replace(/import nodemailer from 'nodemailer';\n/g, '');
+
+// Remove email route
+const emailRouteRegex = /app\.post\('\/api\/job\/:jobId\/email', async \(req: Request, res: Response\) => \{[\s\S]*?\}\);\n\n/g;
+code = code.replace(emailRouteRegex, '');
+
+// Remove sendEmail function
+const sendEmailRegex = /\/\*\*[\s\S]*?async function sendEmail[\s\S]*?throw emailError;\n  \}\n\}\n/g;
+code = code.replace(sendEmailRegex, '');
 
 fs.writeFileSync('server.ts', code);

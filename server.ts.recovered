@@ -6,12 +6,12 @@ import path from 'path';
 import multer from 'multer';
 import crypto from 'crypto';
 import { GoogleGenAI, Type } from '@google/genai';
+import nodemailer from 'nodemailer';
 import { createServer as createViteServer } from 'vite';
 import { PipelineJob, CleaningPlan, DashboardSpec } from './src/types.js';
 import { parseFile, applyCleaningPlan, computeStats, sampleData, formatStat } from './src/utils/data-processing.js';
 import { generateReportPdf } from './src/utils/pdf-generator.js';
 import { generateInteractiveHtml } from './src/utils/html-generator.js';
-import { generateDataProfileHtml } from './src/utils/profiling-generator.js';
 
 import * as archiverModule from 'archiver';
 const archiver = (archiverModule as any).default || archiverModule;
@@ -68,15 +68,7 @@ const clients = new Map<string, express.Response>();
 const emailRateLimit = new Map<string, number>();
 
 setInterval(() => {
-  const ONE_DAY = 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  for (const [jobId, job] of jobs.entries()) {
-    if (job.timestamp && now - job.timestamp > ONE_DAY) {
-      jobs.delete(jobId);
-      clients.delete(jobId);
-      try { fs.unlinkSync(path.join(DATA_DIR, `${jobId}.json`)); } catch(e) {}
-      continue;
-    }
+  for (const job of jobs.values()) {
     saveJobToDisk(job);
   }
 }, 5000);
@@ -108,9 +100,10 @@ const sendEvent = (jobId: string, event: string, data: any) => {
 app.post('/api/upload', upload.single('file'), (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const email = req.body.email || 'user@example.com';
-    const accessToken = req.body.accessToken || '';
+    const email = req.body.email;
+    const accessToken = req.body.accessToken;
     const analysisMode = req.body.analysisMode || 'detailed';
+    if (!email) return res.status(400).json({ error: 'No email provided' });
 
     const ext = path.extname(req.file.originalname).toLowerCase();
     if (!['.csv', '.xls', '.xlsx'].includes(ext)) {
@@ -119,7 +112,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 
     const jobId = crypto.randomUUID();
     const jobToken = crypto.randomUUID();
-    jobs.set(jobId, {
+        jobs.set(jobId, {
       id: jobId,
       jobToken,
       email,
@@ -127,8 +120,7 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
       analysisMode,
       fileName: req.file.originalname,
       originalBuffer: req.file.buffer,
-      status: 'pending',
-      timestamp: Date.now()
+      status: 'pending', timestamp: Date.now()
     });
 
     res.json({ jobId, jobToken });
@@ -139,6 +131,25 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 });
 
 
+app.get('/api/jobs', (req, res) => {
+  const email = req.query.email;
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!email || !token) return res.status(401).json({ error: 'Unauthorized' });
+  
+  // Note: in a real app, verify the access token belongs to the email.
+  // We trust it for this prototype.
+  
+  const userJobs = Array.from(jobs.values())
+    .filter(j => j.email === email)
+    .map(j => ({
+      id: j.id,
+      fileName: j.fileName,
+      status: j.status,
+      timestamp: j.id // we can just use id as a rough sort, but let's add timestamp
+    }));
+    
+  res.json(userJobs);
+});
 
 app.get('/api/job/:jobId', (req, res) => {
   const { jobId } = req.params;
@@ -151,7 +162,7 @@ app.get('/api/job/:jobId', (req, res) => {
   if (job.jobToken !== reqToken) return res.status(401).json({ error: 'Unauthorized' });
   
   // Exclude buffers for the JSON response
-  const { originalBuffer, reportPdf, reportHtml, profilingHtml, ...safeJob } = job;
+  const { originalBuffer, reportPdf, reportHtml, ...safeJob } = job;
   res.json(safeJob);
 });
 
@@ -208,43 +219,33 @@ app.get('/api/job/:jobId/download/:fileType', async (req, res) => {
     return res.status(401).send('Unauthorized: Invalid job token');
   }
 
-  const isHtmlReport = fileType === 'html' || fileType === 'html-report' || fileType === 'interactive';
-  const isProfilingReport = fileType === 'profiling' || fileType === 'profiling-report' || fileType === 'profile';
 
   if (fileType === 'csv' && job.cleanedData) {
     const Papa = await import('papaparse');
     const csvStr = Papa.default.unparse(job.cleanedData);
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="cleaned_data_${jobId}.csv"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="cleaned_data.csv"');
     res.send(csvStr);
   } else if (fileType === 'png' && job.dashboardImage) {
     const dashImageBase64 = job.dashboardImage.replace(/^data:image\/\w+;base64,/, '');
     const dashBuffer = Buffer.from(dashImageBase64, 'base64');
     res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Content-Disposition', `attachment; filename="dashboard_${jobId}.png"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="dashboard.png"');
     res.send(dashBuffer);
   } else if (fileType === 'pdf' && job.reportPdf) {
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `${req.query.view ? 'inline' : 'attachment'}; filename="report_${jobId}.pdf"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="report.pdf"');
     res.send(job.reportPdf);
-  } else if (isHtmlReport && (job.reportHtml || (job.dashboardSpec && job.cleanedData))) {
-    const htmlBuffer = job.reportHtml || generateInteractiveHtml(job.dashboardSpec!, job.cleanedData!);
-    job.reportHtml = htmlBuffer;
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Content-Disposition', `${req.query.view ? 'inline' : 'attachment'}; filename="report_${jobId}.html"`);
-    res.send(htmlBuffer);
-  } else if (isProfilingReport && (job.profilingHtml || (job.stats && job.cleanedData))) {
-    const profBuffer = job.profilingHtml || generateDataProfileHtml(job.stats, job.cleanedData);
-    job.profilingHtml = profBuffer;
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Content-Disposition', `${req.query.view ? 'inline' : 'attachment'}; filename="profiling_${jobId}.html"`);
-    res.send(profBuffer);
-  } else if (fileType === 'zip' && job.cleanedData) {
+  } else if (fileType === 'html' && job.reportHtml) {
+    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Disposition', 'attachment; filename="interactive_report.html"');
+    res.send(job.reportHtml);
+  } else if (fileType === 'zip' && job.cleanedData && job.dashboardImage && job.reportPdf) {
     const Papa = await import('papaparse');
     const archive = archiver('zip', { zlib: { level: 9 } });
 
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', `attachment; filename="analytics_package_${jobId}.zip"`);
+    res.setHeader('Content-Disposition', 'attachment; filename="analytics_package.zip"');
 
     archive.pipe(res);
 
@@ -252,28 +253,17 @@ app.get('/api/job/:jobId/download/:fileType', async (req, res) => {
     const csvStr = Papa.default.unparse(job.cleanedData);
     archive.append(csvStr, { name: 'cleaned_data.csv' });
 
+    // PNG
+    const dashImageBase64 = job.dashboardImage.replace(/^data:image\/\w+;base64,/, '');
+    const dashBuffer = Buffer.from(dashImageBase64, 'base64');
+    archive.append(dashBuffer, { name: 'dashboard.png' });
+
     // PDF
-    if (job.reportPdf) {
-      archive.append(job.reportPdf, { name: `report_${jobId}.pdf` });
-    }
+    archive.append(job.reportPdf, { name: 'report.pdf' });
 
-    // Interactive HTML Report
-    const htmlBuf = job.reportHtml || (job.dashboardSpec && job.cleanedData ? generateInteractiveHtml(job.dashboardSpec, job.cleanedData) : null);
-    if (htmlBuf) {
-      archive.append(htmlBuf, { name: `report_${jobId}.html` });
-    }
-
-    // Technical Data Profiling Report
-    const profBuf = job.profilingHtml || (job.stats && job.cleanedData ? generateDataProfileHtml(job.stats, job.cleanedData) : null);
-    if (profBuf) {
-      archive.append(profBuf, { name: `profiling_${jobId}.html` });
-    }
-
-    // Dashboard PNG
-    if (job.dashboardImage) {
-      const dashImageBase64 = job.dashboardImage.replace(/^data:image\/\w+;base64,/, '');
-      const dashBuffer = Buffer.from(dashImageBase64, 'base64');
-      archive.append(dashBuffer, { name: 'dashboard.png' });
+    // HTML
+    if (job.reportHtml) {
+      archive.append(job.reportHtml, { name: 'interactive_report.html' });
     }
 
     archive.finalize();
@@ -318,23 +308,26 @@ User's Question: ${message}`;
 
 app.post('/api/job/:jobId/email', async (req, res) => {
   const { jobId } = req.params;
-  const { to, attachments } = req.body;
+  const options = req.body;
   const job = jobs.get(jobId);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (!job) return res.status(404).send('Job not found');
   
-  const reqToken = req.headers['x-job-token'] || req.body?.jobToken || req.query.token;
+  const reqToken = req.query.token || req.headers['x-job-token'] || req.body?.jobToken;
   if (!reqToken || reqToken !== job.jobToken) {
-    return res.status(401).json({ error: 'Unauthorized: Invalid job token' });
+    return res.status(401).send('Unauthorized: Invalid job token');
   }
 
-  // Record audit log
-  logger.info(jobId, `Email dispatch requested for ${to}. Included attachments: ${JSON.stringify(attachments)}`);
-  
-  res.json({
-    success: true,
-    message: `Delivery scheduled for ${to}. Stakeholder PDF report included as primary attachment.`
-  });
+  if (job.status !== 'complete') return res.status(400).send('Job not complete');
+
+  try {
+    await sendEmail(job, options);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
+
+
 
 app.post('/api/job/:jobId/refresh', async (req, res) => {
   const { jobId } = req.params;
@@ -574,14 +567,6 @@ async function runPipeline(job: PipelineJob) {
     throw new Error('AI generated a dashboard referencing entirely invalid columns.');
   }
 
-  // Enforce hard limit of 12 charts in DashboardSpec, preserving hidden charts
-  dashboardSpec.pages.forEach(page => {
-    if (page.charts && page.charts.length > 12) {
-      (page as any).hiddenCharts = page.charts.slice(12);
-      page.charts = page.charts.slice(0, 12);
-    }
-  });
-
   job.dashboardSpec = dashboardSpec;
 
   sendEvent(job.id, 'status', { status: 'waiting_for_dashboard' });
@@ -637,11 +622,6 @@ Insights: ${JSON.stringify(dashboardSpec.pages.flatMap(p => p.insights), null, 2
     sendEvent(job.id, 'log', { text: '✓ Interactive HTML export generated successfully' });
   }
 
-  if (job.cleanedData) {
-    job.profilingHtml = generateDataProfileHtml(job.stats, job.cleanedData);
-    sendEvent(job.id, 'log', { text: '✓ Full Data Profiling (technical) report generated successfully' });
-  }
-
   // Generate PDF natively (chartjs-node-canvas handles the charts)
   job.reportPdf = await generateReportPdf(
     job.reportText!, 
@@ -654,7 +634,97 @@ Insights: ${JSON.stringify(dashboardSpec.pages.flatMap(p => p.insights), null, 2
   clients.delete(job.id);
 }
 
+function generateDataProfileHtml(stats: any): Buffer {
+  let html = `<!DOCTYPE html>
+<html>
+<head>
+<title>Data Profiling Report</title>
+<style>
+body { font-family: sans-serif; padding: 20px; }
+table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+th { background-color: #f2f2f2; }
+</style>
+</head>
+<body>
+<h1>Data Profiling Report</h1>
+<p>Automated Pandas Profiling-style summary.</p>
+<h2>Dataset Statistics</h2>
+<table>
+<tr><th>Column</th><th>Type</th><th>Null %</th><th>Min</th><th>Max</th><th>Unique Count</th></tr>
+`;
+  if (stats) {
+    for (const [col, info] of Object.entries(stats)) {
+      const i = info as any;
+      html += `<tr>
+<td>${col}</td>
+<td>${i.inferred_type || ''}</td>
+<td>${((i.null_pct || 0) * 100).toFixed(2)}%</td>
+<td>${i.min ?? ''}</td>
+<td>${i.max ?? ''}</td>
+<td>${i.unique_count ?? ''}</td>
+</tr>\n`;
+    }
+  }
+  html += `</table>
+</body>
+</html>`;
+  return Buffer.from(html, 'utf-8');
+}
 
+
+async function sendEmail(job: PipelineJob, options: { to?: string, cc?: string, bcc?: string, subject?: string, body?: string, attachHtml?: boolean } = {}) {
+  sendEvent(job.id, 'log', { text: 'Sending email via Gmail API...' });
+  
+  if (!job.accessToken) {
+    throw new Error('Not authenticated with Google. Cannot send email. Please ensure you logged in with Google and granted Gmail permissions.');
+  }
+  
+  const { auth, gmail } = await import('@googleapis/gmail');
+  const MailComposer = (await import('nodemailer/lib/mail-composer/index.js')).default;
+  
+  const dashImageBase64 = job.dashboardImage!.replace(/^data:image\/\w+;base64,/, '');
+  const dashBuffer = Buffer.from(dashImageBase64, 'base64');
+  
+  const defaultSubject = `[${job.fileName.split('.')[0] || 'Dataset'}] — Analytics Report & Executive Summary`;
+  
+  const attachments = [
+    { filename: 'report.pdf', content: job.reportPdf! }
+  ];
+
+
+  const mailOptions: any = {
+    to: options.to || job.email,
+    subject: options.subject || defaultSubject,
+    html: options.body || '<p>Hello,</p><p>Your automated analytics package is ready. Please find attached your Executive Summary (PDF).</p>',
+    ...(options.cc ? { cc: options.cc } : {}),
+    ...(options.bcc ? { bcc: options.bcc } : {}),
+    attachments
+  };
+
+  try {
+    const mail = new MailComposer(mailOptions);
+    const message = await mail.compile().build();
+    const rawMessage = Buffer.from(message).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+    const oauth2Client = new auth.OAuth2();
+    oauth2Client.setCredentials({ access_token: job.accessToken });
+    
+    const client = gmail({ version: 'v1', auth: oauth2Client });
+    await client.users.messages.send({
+      userId: 'me',
+      requestBody: {
+        raw: rawMessage
+      }
+    });
+
+    sendEvent(job.id, 'log', { text: `Successfully sent email to ${job.email}` });
+  } catch (emailError: any) {
+    logger.error(job.id, 'Email sending failed:', emailError);
+    sendEvent(job.id, 'log', { text: `Warning: Email delivery failed (${emailError.message}).` });
+    throw emailError;
+  }
+}
 
 
 app.delete('/api/job/:jobId', (req, res) => {

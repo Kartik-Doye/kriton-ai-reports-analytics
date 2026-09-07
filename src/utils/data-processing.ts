@@ -5,7 +5,21 @@ import { CleaningPlan } from '../types.js';
 export function parseFile(buffer: Buffer, fileName: string): { data: any[], warnings: string[] } {
   const ext = fileName.split('.').pop()?.toLowerCase();
   if (ext === 'csv') {
-    const result = Papa.parse(buffer.toString('utf-8'), { header: true, skipEmptyLines: true });
+    let duplicateWarnings = 0;
+    const seenHeaders = new Set<string>();
+    const result = Papa.parse(buffer.toString('utf-8'), {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (header) => {
+        const trimmed = header.trim();
+        if (seenHeaders.has(trimmed)) {
+          duplicateWarnings++;
+          return `${trimmed}_${duplicateWarnings}`;
+        }
+        seenHeaders.add(trimmed);
+        return trimmed;
+      }
+    });
     const warnings = duplicateWarnings > 0 ? [`Found ${duplicateWarnings} duplicate column headers. They have been renamed.`] : [];
     return { data: result.data, warnings };
   } else if (ext === 'xls' || ext === 'xlsx') {
