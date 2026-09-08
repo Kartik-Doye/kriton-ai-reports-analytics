@@ -68,7 +68,7 @@ export function computeStats(data: any[]) {
     headers = headers.slice(0, 75);
   }
   headers.forEach(h => {
-    stats[h] = { type: 'unknown', nullCount: 0, uniqueCount: 0, min: null, max: null };
+    stats[h] = { type: 'unknown', nullCount: 0, uniqueValues: new Set<string>(), min: null, max: null };
   });
 
   data.forEach(row => {
@@ -77,20 +77,26 @@ export function computeStats(data: any[]) {
       if (val === null || val === undefined || val === '') {
         stats[h].nullCount++;
       } else {
+        stats[h].uniqueValues.add(String(val));
         if (typeof val === 'number') {
-          stats[h].type = 'number';
+          if (stats[h].type === 'unknown' || stats[h].type === 'number') stats[h].type = 'number';
           if (stats[h].min === null || val < stats[h].min) stats[h].min = formatStat(val);
           if (stats[h].max === null || val > stats[h].max) stats[h].max = formatStat(val);
         } else if (typeof val === 'string' && !isNaN(Number(val))) {
-          stats[h].type = 'number';
+          if (stats[h].type === 'unknown' || stats[h].type === 'number') stats[h].type = 'number';
           const n = Number(val);
           if (stats[h].min === null || n < stats[h].min) stats[h].min = formatStat(n);
           if (stats[h].max === null || n > stats[h].max) stats[h].max = formatStat(n);
         } else {
-          stats[h].type = 'string';
+          stats[h].type = stats[h].type === 'unknown' ? 'string' : 'mixed';
         }
       }
     });
+  });
+
+  headers.forEach(h => {
+    stats[h].uniqueCount = stats[h].uniqueValues.size;
+    delete stats[h].uniqueValues;
   });
 
   return stats;
@@ -98,7 +104,7 @@ export function computeStats(data: any[]) {
 
 export function applyCleaningPlan(data: any[], plan: CleaningPlan): { cleanedData: any[], log: string } {
   let logLines: string[] = [];
-  let cleanedData = [...data];
+  let cleanedData = data.map(row => ({ ...row }));
 
   // 1. Remove duplicates
   if (plan.dedup_keys && plan.dedup_keys.length > 0) {
@@ -120,6 +126,7 @@ export function applyCleaningPlan(data: any[], plan: CleaningPlan): { cleanedDat
   if (plan.columns) {
     plan.columns.forEach(colPlan => {
       const col = colPlan.name;
+      if (!cleanedData.some(row => Object.prototype.hasOwnProperty.call(row, col))) return;
       let filledCount = 0;
       let droppedCount = 0;
       
@@ -144,9 +151,6 @@ export function applyCleaningPlan(data: any[], plan: CleaningPlan): { cleanedDat
             filledCount++;
           }
         } else {
-          // parse type
-
-          // parse type
           if (colPlan.type === 'number') {
             if (typeof val === 'string') {
               // basic currency stripping
@@ -169,6 +173,35 @@ export function applyCleaningPlan(data: any[], plan: CleaningPlan): { cleanedDat
       if (droppedCount > 0) logLines.push(`Dropped ${droppedCount} rows with missing '${col}'.`);
       if (filledCount > 0) logLines.push(`Filled ${filledCount} missing values in '${col}'.`);
     });
+  }
+
+  // Apply numeric outlier rules after type conversion and null handling.
+  for (const outlierPlan of plan.outliers || []) {
+    const values = cleanedData
+      .map(row => Number(row[outlierPlan.column]))
+      .filter(value => Number.isFinite(value));
+    if (values.length < 2) continue;
+
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const variance = values.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / values.length;
+    const standardDeviation = Math.sqrt(variance);
+    if (standardDeviation === 0) continue;
+
+    const lower = mean - 3 * standardDeviation;
+    const upper = mean + 3 * standardDeviation;
+    let affectedCount = 0;
+    cleanedData.forEach(row => {
+      const value = Number(row[outlierPlan.column]);
+      if (!Number.isFinite(value) || value < lower || value > upper) {
+        if (Number.isFinite(value)) affectedCount++;
+        if (outlierPlan.rule === 'clip_to_3std' && Number.isFinite(value)) {
+          row[outlierPlan.column] = Math.min(upper, Math.max(lower, value));
+        }
+      }
+    });
+    if (affectedCount > 0) {
+      logLines.push(`${outlierPlan.rule === 'clip_to_3std' ? 'Clipped' : 'Flagged'} ${affectedCount} outlier values in '${outlierPlan.column}'.`);
+    }
   }
 
   return { cleanedData, log: logLines.join('\n') || 'No cleaning actions required.' };

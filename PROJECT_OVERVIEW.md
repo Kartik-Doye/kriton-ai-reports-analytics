@@ -7,7 +7,7 @@ Kriton (v1.2) is a full-stack data analytics application that automatically clea
 - **Frontend:** React 19, Vite, Tailwind CSS, Motion (Framer), Recharts, Chart.js, Lucide-React.
 - **Backend:** Node.js, Express, esbuild, Multer.
 - **AI:** Google Gemini API (`@google/genai`).
-- **Integration:** Google APIs (`@googleapis/calendar`, `docs`, `drive`, `gmail`), Firebase Auth (`firebase`).
+- **Exports:** PDF, interactive HTML, technical profiling HTML, cleaned CSV, PNG when available, and ZIP packages.
 
 ## 2. Folder & File Structure
 ```text
@@ -18,18 +18,16 @@ Kriton (v1.2) is a full-stack data analytics application that automatically clea
 │   ├── App.tsx                     # Main React component, handles high-level state, SSE connection, UI routing
 │   ├── main.tsx                    # React entry point
 │   ├── types.ts                    # Shared TypeScript interfaces (e.g., PipelineJob, DashboardSpec)
-│   ├── auth.ts                     # Firebase Auth and Google OAuth initialization and token handling
 │   ├── index.css                   # Global Tailwind CSS entry point
 │   ├── components/
 │   │   ├── AmbientBackground.tsx   # Decorative background UI component
 │   │   ├── DashboardView.tsx       # Renders the dynamic multi-page BI dashboard based on AI specs
-│   │   ├── EmailModal.tsx          # Modal UI for triggering email delivery of reports
 │   │   ├── FireSymbol.tsx          # Logo/Icon component
 │   │   ├── Loader.tsx              # Loading state spinner
 │   │   ├── LogViewer.tsx           # Real-time streaming log display from SSE events
 │   │   ├── ProgressStepper.tsx     # Visual progress indicator for pipeline stages
 │   │   ├── ThemeToggle.tsx         # Dark/Light mode switcher
-│   │   └── UploadForm.tsx          # File dropzone and Google Sign-in initiation
+│   │   └── UploadForm.tsx          # File dropzone, preview, and upload initiation
 │   ├── config/
 │   │   └── prompts.ts              # Text templates for AI instructions (Cleaning, Dashboard, Narrative)
 │   └── utils/
@@ -41,7 +39,7 @@ Kriton (v1.2) is a full-stack data analytics application that automatically clea
 ```
 
 ## 3. End-to-End Workflow
-1. **Upload:** User uploads a CSV via `UploadForm.tsx`. `POST /api/upload` (in `server.ts`) creates an in-memory `PipelineJob`, assigns a `jobToken`, and responds with `jobId`.
+1. **Upload:** User uploads a CSV, Excel, or JSON file via `UploadForm.tsx`. `POST /api/upload` (in `server.ts`) creates a `PipelineJob`, assigns a `jobToken`, and responds with `jobId`.
 2. **SSE Connection:** `App.tsx` opens an SSE connection to `GET /api/job/:jobId/stream`. Once connected, the server kicks off `runPipeline()` asynchronously.
 3. **Clean (Stage 2):** `runPipeline()` calls `data-processing.ts` to parse the CSV, compute stats, and send the `CLEANING_PROMPT` to Gemini (`server.ts:generateCachedContent`). It parses the JSON response and programmatically cleans/transforms the data.
 4. **Plan Dashboard (Stage 3):** The server computes stats on the cleaned data and prompts Gemini with `DASHBOARD_PROMPT` to generate a `DashboardSpec` (pages, KPIs, charts).
@@ -89,14 +87,12 @@ stateDiagram-v2
 | POST | `/api/upload` | Upload CSV and initialize pipeline job. | None | `multipart/form-data` | `{ jobId, jobToken }` |
 | GET | `/api/job/:jobId/stream` | Server-Sent Events (SSE) stream for status, logs, and data. | Yes (`?token=` or header) | N/A | `text/event-stream` |
 | GET | `/api/job/:jobId/download/:fileType` | Download generated files (csv, png, pdf, html, zip). | Yes (`?token=` or header) | N/A | File binary |
-| POST | `/api/job/:jobId/chat` | Chat with AI about the dataset context. | **No** (Currently missing check) | `{ message }` | `{ reply }` |
-| POST | `/api/job/:jobId/export-docs` | Export narrative report to Google Docs. | Yes (`x-job-token` header) | N/A | `{ documentId, url }` |
-| POST | `/api/job/:jobId/schedule-meeting`| Schedule a meeting via Google Calendar. | Yes (`x-job-token` header) | `{ attendees }` | `{ eventId, url }` |
-| POST | `/api/job/:jobId/email` | Email report via NodeMailer/Resend. | Yes (`x-job-token` header) | `{ to, subject }` | `{ success }` |
+| POST | `/api/job/:jobId/chat` | Chat with AI about the dataset context. | Yes (`jobToken` body field) | `{ message, jobToken }` | `{ reply }` |
+| POST | `/api/job/:jobId/email` | Record an email delivery request. | Yes (`x-job-token`, body, or query) | `{ to, attachments }` | `{ success }` |
 | DELETE| `/api/job/:jobId` | Delete job data from server memory. | Yes (`x-job-token` header) | N/A | `{ success }` |
 
 ## 6. AI / Gemini Integration
-All calls happen in `server.ts` utilizing `@google/genai` with model `gemini-3.6-flash`. Wrapped in `withRetry` exponential backoff.
+All calls happen in `server.ts` utilizing `@google/genai` with model `gemini-3.5-flash`. Wrapped in `withRetry` exponential backoff.
 1. **Cleaning Plan** (Stage 2): `runPipeline` uses `CLEANING_PROMPT` (`src/config/prompts.ts`). Expects JSON schema representing data column types and outliers. *Fallback: logs error and falls back to raw data without cleaning.*
 2. **Dashboard Spec** (Stage 3): `runPipeline` uses `DASHBOARD_PROMPT`. Expects JSON schema for `DashboardSpec`. *Fallback: Generates a heuristic single-page dashboard spec without AI.*
 3. **Narrative Generation** (Stage 4): `runPipeline` uses `NARRATIVE_PROMPT`. Expects plain text / markdown. *Fallback: Replaces with static failure text.*
@@ -139,11 +135,10 @@ export interface DashboardPage {
 
 ## 8. Frontend Component Map
 - **App** (`src/App.tsx`): Main wrapper. Manages job state (`jobId`, `jobStatus`), sets up SSE listener, and routes view between `UploadForm` and `DashboardView`.
-- **UploadForm** (`src/components/UploadForm.tsx`): Handles drag-and-drop file inputs, Google Firebase login. POSTs to `/api/upload`.
+- **UploadForm** (`src/components/UploadForm.tsx`): Handles drag-and-drop file inputs, CSV preview, sample data, and POSTs to `/api/upload`.
 - **DashboardView** (`src/components/DashboardView.tsx`): Given a `DashboardSpec` and `data` array, renders KPIs, Recharts charts, and the AI narrative.
 - **ProgressStepper** (`src/components/ProgressStepper.tsx`): Dumb visual component reflecting current pipeline stage.
 - **LogViewer** (`src/components/LogViewer.tsx`): Dumb list component showing live SSE logs.
-- **EmailModal** (`src/components/EmailModal.tsx`): Modal to input email configurations. Calls `/api/job/:jobId/email`.
 
 ```mermaid
 graph TD
@@ -158,13 +153,14 @@ graph TD
 
 ## 9. Security Model (current state)
 - **Authentication**: When a file is uploaded, a random `jobToken` string is generated and returned to the client. The client must pass it as `?token=` or an `x-job-token` header to subsequent requests.
-- **Vulnerability**: The `POST /api/job/:jobId/chat` endpoint is **missing** `jobToken` verification logic. Anyone with a `jobId` can query the data context.
-- **Persistence & Encryption**: The server stores data entirely in-memory (`Map<string, PipelineJob>`). Uploaded CSV files, generated PDFs, and Google OAuth `accessToken`s are kept in RAM (not encrypted at rest).
+- **Endpoint authorization**: Job status, SSE, downloads, chat, email, refresh, and deletion require the job token. The upload endpoint is intentionally unauthenticated.
+- **Persistence & encryption**: Jobs are kept in memory and serialized under `.data/jobs` for restart recovery. Stored files and job tokens are not encrypted at rest, so deployment storage must be protected.
 
 ## 10. Known Limitations / Open Issues
-- **In-Memory Storage**: Job definitions, OAuth access tokens, and potentially heavy CSV buffers exist only in Node.js memory. This limits scalability and makes jobs transient across container restarts.
-- **Vestigial Code (`dashboardImage`)**: `job.dashboardImage` is expected in `PipelineJob` and referenced when downloading ZIPs or PNGs (`server.ts`), but it is **never populated** by the server or client in the current implementation.
-- **Chat Endpoint Security**: Missing `jobToken` token verification.
+- **Single-process job storage**: Jobs are stored in one process and cleaned up after 24 hours. This is not suitable for horizontally scaled deployment without a shared store.
+- **Email delivery**: The current email endpoint records and acknowledges a request but does not send mail; an email provider integration is still required.
+- **Dashboard PNG**: `job.dashboardImage` is supported by download/ZIP logic but is not populated by the current dashboard flow.
+- **Spreadsheet dependency**: `xlsx` has known unresolved audit findings and should be replaced or isolated before processing untrusted workbooks at scale.
 
 ## 11. How to Run Locally
 **Prerequisites:** Node.js 18+ installed.
@@ -173,7 +169,7 @@ graph TD
    ```env
    GEMINI_API_KEY=your_gemini_api_key
    ```
-   *(Note: Ensure `firebase-applet-config.json` exists at root for Firebase Auth)*
+   `GEMINI_API_KEY` is required for AI-powered cleaning, dashboard planning, narrative generation, and chat.
 
 2. **Installation:**
    ```bash

@@ -3,7 +3,7 @@ import { Terminal, X, Minimize2, Maximize2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Props {
-  logs: string[];
+  logs: { text: string; timestamp: string }[];
 }
 
 export function LogViewer({ logs }: Props) {
@@ -75,9 +75,9 @@ export function LogViewer({ logs }: Props) {
                 logs.map((log, i) => (
                   <div key={i} className="flex gap-3">
                     <span className="text-slate-600 shrink-0">
-                      [{new Date().toLocaleTimeString([], { hour12: false })}]
+                      [{log.timestamp}]
                     </span>
-                    <span className="break-words">{log}</span>
+                    <span className="break-words">{log.text}</span>
                   </div>
                 ))
               )}

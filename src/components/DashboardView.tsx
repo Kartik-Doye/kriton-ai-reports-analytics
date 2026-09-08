@@ -6,7 +6,7 @@ import * as Papa from 'papaparse';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   MessageCircle, X, Send, Bot, User, AlertTriangle, Database, ShieldAlert,
-  Zap, ChevronRight, ChevronDown, TrendingUp, TrendingDown, Filter, Layers, BarChart3, PieChart as PieIcon, Sparkles
+  Zap, ChevronRight, ChevronDown, TrendingUp, TrendingDown, Filter, Layers, BarChart3, PieChart as PieIcon, Sparkles, RefreshCw
 } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { fetchWithRetry } from '../utils/retry';
@@ -19,11 +19,12 @@ interface Props {
   autoExport: boolean;
   dataQuality?: { totalRecords: number; rowsExcluded: number };
   cleaningLog?: string;
+  onStartOver?: () => void;
 }
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
-export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQuality, cleaningLog }: Props) {
+export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQuality, cleaningLog, onStartOver }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [exported, setExported] = useState(false);
   const [showAllCharts, setShowAllCharts] = useState(false);
@@ -395,6 +396,14 @@ export function DashboardView({ jobId, jobToken, spec, data, autoExport, dataQua
           )}
         </div>
         <div className="flex items-center gap-4">
+          {onStartOver && (
+            <button
+              onClick={onStartOver}
+              className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg text-xs font-semibold transition-colors shadow-sm"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Start Over
+            </button>
+          )}
           {!autoExport && (
             <>
               <div className={`flex rounded-lg p-1 ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-100'}`}>

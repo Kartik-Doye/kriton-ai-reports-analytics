@@ -54,13 +54,23 @@ for (const file of fs.readdirSync(DATA_DIR)) {
   if (file.endsWith(".json")) {
     try {
       const data = JSON.parse(fs.readFileSync(path.join(DATA_DIR, file), "utf8"));
+      if (typeof data.originalBuffer === 'string') data.originalBuffer = Buffer.from(data.originalBuffer, 'base64');
+      if (typeof data.reportPdf === 'string') data.reportPdf = Buffer.from(data.reportPdf, 'base64');
+      if (typeof data.reportHtml === 'string') data.reportHtml = Buffer.from(data.reportHtml, 'base64');
+      if (typeof data.profilingHtml === 'string') data.profilingHtml = Buffer.from(data.profilingHtml, 'base64');
       jobs.set(data.id, data as PipelineJob);
     } catch (e) {}
   }
 }
 function saveJobToDisk(job: PipelineJob) {
-  const { originalBuffer, reportPdf, reportHtml, ...rest } = job;
-  try { fs.writeFileSync(path.join(DATA_DIR, `${job.id}.json`), JSON.stringify(rest)); } catch(e) {}
+  const serializableJob = {
+    ...job,
+    originalBuffer: job.originalBuffer?.toString('base64'),
+    reportPdf: job.reportPdf?.toString('base64'),
+    reportHtml: job.reportHtml?.toString('base64'),
+    profilingHtml: job.profilingHtml?.toString('base64')
+  };
+  try { fs.writeFileSync(path.join(DATA_DIR, `${job.id}.json`), JSON.stringify(serializableJob)); } catch(e) {}
 }
 // SSE connections
 const clients = new Map<string, express.Response>();
@@ -113,8 +123,8 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
     const analysisMode = req.body.analysisMode || 'detailed';
 
     const ext = path.extname(req.file.originalname).toLowerCase();
-    if (!['.csv', '.xls', '.xlsx'].includes(ext)) {
-      return res.status(400).json({ error: 'Invalid file type. Please upload a .csv, .xls, or .xlsx file.' });
+    if (!['.csv', '.xls', '.xlsx', '.json'].includes(ext)) {
+      return res.status(400).json({ error: 'Invalid file type. Please upload a .csv, .xls, .xlsx, or .json file.' });
     }
 
     const jobId = crypto.randomUUID();
@@ -151,7 +161,7 @@ app.get('/api/job/:jobId', (req, res) => {
   if (job.jobToken !== reqToken) return res.status(401).json({ error: 'Unauthorized' });
   
   // Exclude buffers for the JSON response
-  const { originalBuffer, reportPdf, reportHtml, profilingHtml, ...safeJob } = job;
+  const { originalBuffer, reportPdf, reportHtml, profilingHtml, accessToken, ...safeJob } = job;
   res.json(safeJob);
 });
 
@@ -284,9 +294,15 @@ app.get('/api/job/:jobId/download/:fileType', async (req, res) => {
 
 app.post('/api/job/:jobId/chat', async (req, res) => {
   const { jobId } = req.params;
-  const { message } = req.body;
+  const { message, jobToken } = req.body;
   const job = jobs.get(jobId);
   if (!job) return res.status(404).send('Job not found');
+  if (!jobToken || jobToken !== job.jobToken) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid job token' });
+  }
+  if (typeof message !== 'string' || !message.trim()) {
+    return res.status(400).json({ error: 'A message is required' });
+  }
 
   try {
     const statsStr = JSON.stringify(job.stats || {}).substring(0, 5000);
@@ -310,7 +326,7 @@ User's Question: ${message}`;
     
     res.json({ reply: response.text });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message || 'Chat request failed' });
   }
 });
 

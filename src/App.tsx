@@ -254,6 +254,7 @@ export default function App() {
                         dataQuality={dataQuality}
                         cleaningLog={cleaningLog} 
                         autoExport={jobStatus === 'waiting_for_dashboard'}
+                        onStartOver={resetSession}
                       />
                     </motion.div>
                   ) : (
@@ -429,13 +430,19 @@ export default function App() {
                         >
                           <Download className="w-4 h-4" /> Download Complete Package (ZIP)
                         </a>
-
                         <button
                           type="button"
                           onClick={() => setShowEmailModal(true)}
                           className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 border border-slate-300/80 dark:border-white/15 hover:bg-slate-100 dark:hover:bg-white/5 text-slate-700 dark:text-slate-200 text-xs font-semibold rounded-xl transition-all"
                         >
                           <Mail className="w-4 h-4 text-blue-500" /> Share via Email...
+                        </button>
+                        <button
+                          type="button"
+                          onClick={resetSession}
+                          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-3 border border-red-300/80 dark:border-red-500/30 hover:bg-red-50 dark:hover:bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-semibold rounded-xl transition-all"
+                        >
+                          <RefreshCw className="w-4 h-4" /> Start Over
                         </button>
                       </div>
 

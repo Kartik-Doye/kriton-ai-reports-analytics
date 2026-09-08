@@ -28,7 +28,13 @@ export function UploadForm({ onSuccess, onRestore }: Props) {
         // Fetch statuses for each job
         Promise.all(savedJobs.map(job => 
           fetch(`/api/job/${job.id}?token=${job.jobToken}`)
-            .then(res => res.ok ? res.json() : null)
+            .then(res => {
+              const contentType = res.headers.get('content-type');
+              if (res.ok && contentType && contentType.includes('application/json')) {
+                return res.json();
+              }
+              return null;
+            })
         )).then(results => {
           const validJobs = results.filter(j => j !== null);
           setHistory(validJobs);
@@ -133,18 +139,21 @@ export function UploadForm({ onSuccess, onRestore }: Props) {
         method: 'POST',
         body: formData,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Upload failed');
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        
+        // Save to localStorage
+        const savedJobsStr = localStorage.getItem('analytics_jobs');
+        const savedJobs = savedJobsStr ? JSON.parse(savedJobsStr) : [];
+        savedJobs.unshift({ id: data.jobId, jobToken: data.jobToken });
+        localStorage.setItem('analytics_jobs', JSON.stringify(savedJobs));
+        
+        onSuccess(data.jobId, data.jobToken);
+      } else {
+        throw new Error('Server returned an invalid response (expected JSON). Ensure the backend is running via "npm run dev".');
       }
-      
-      // Save to localStorage
-      const savedJobsStr = localStorage.getItem('analytics_jobs');
-      const savedJobs = savedJobsStr ? JSON.parse(savedJobsStr) : [];
-      savedJobs.unshift({ id: data.jobId, jobToken: data.jobToken });
-      localStorage.setItem('analytics_jobs', JSON.stringify(savedJobs));
-      
-      onSuccess(data.jobId, data.jobToken);
     } catch (err: any) {
       setError(err.message);
     } finally {
